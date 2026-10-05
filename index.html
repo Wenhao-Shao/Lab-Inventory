@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Shao Lab Inventory</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+html{-webkit-text-size-adjust:100%}body{margin:0}img{max-width:100%}[hidden]{display:none!important}
+/* Layout: one working column. Search on top, a list you scan, each row opens in place; forms slide over as a sheet. */
+:root{
+  --bg:#F2F5F5; --surface:#FFFFFF; --sunk:#E9EEEE; --ink:#15252B; --muted:#56686F; --line:#D3DCDD;
+  --accent:#0A6C6C; --accent-ink:#FFFFFF; --accent-soft:#DDEFEE;
+  --low:#8A5200; --low-bg:#FFEFCF; --out:#A8221B; --out-bg:#FCE4E1;
+  --ord:#1C5596; --ord-bg:#E1ECFA; --ok:#27693F; --ok-bg:#E1F1E7; --none:#56686F; --none-bg:#E9EEEE;
+  --display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0E1719; --surface:#162226; --sunk:#1D2C31; --ink:#E5EEEF; --muted:#98AAB0; --line:#2B3C42;
+  --accent:#58C7C0; --accent-ink:#06201F; --accent-soft:#163A3A;
+  --low:#F3C05C; --low-bg:#3D2E0C; --out:#FF958C; --out-bg:#43191A;
+  --ord:#8DBBF2; --ord-bg:#172C47; --ok:#7DCB98; --ok-bg:#143021; --none:#98AAB0; --none-bg:#1D2C31;
+  color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0E1719; --surface:#162226; --sunk:#1D2C31; --ink:#E5EEEF; --muted:#98AAB0; --line:#2B3C42;
+  --accent:#58C7C0; --accent-ink:#06201F; --accent-soft:#163A3A;
+  --low:#F3C05C; --low-bg:#3D2E0C; --out:#FF958C; --out-bg:#43191A;
+  --ord:#8DBBF2; --ord-bg:#172C47; --ok:#7DCB98; --ok-bg:#143021; --none:#98AAB0; --none-bg:#1D2C31;
+  color-scheme:dark }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.45}
+.wrap{max-width:980px;margin:0 auto;padding-inline:16px;padding-block:20px 80px;display:flex;flex-direction:column;gap:14px}
+h1{font-family:var(--display);font-size:26px;line-height:1.1;margin:0;letter-spacing:.01em}
+.sub{color:var(--muted);font-size:13px;margin:2px 0 0}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono);font-size:.92em}
+.num{font-variant-numeric:tabular-nums}
+
+.top{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between}
+.search{display:flex;gap:8px;flex-wrap:wrap}
+.search input{flex:1 1 240px;min-width:0;padding:12px 14px;border:1.5px solid var(--line);border-radius:8px;background:var(--surface);font-size:16px}
+.search input:focus{border-color:var(--accent);outline:none}
+.btn{padding:10px 14px;border-radius:8px;border:1.5px solid var(--line);background:var(--surface);font-weight:500;white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.small{padding:6px 10px;font-size:13px}
+.btn[disabled]{opacity:.5;cursor:default}
+
+.tabs{display:flex;gap:4px;border-bottom:1.5px solid var(--line);overflow-x:auto}
+.tab{background:none;border:0;padding:9px 12px;font-weight:500;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1.5px;white-space:nowrap}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.count{font-family:var(--mono);font-size:12px;background:var(--sunk);border-radius:10px;padding:1px 7px;margin-left:4px}
+
+.filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.chip{border:1.5px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 11px;font-size:13px}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent)}
+.filters select{padding:6px 8px;border:1.5px solid var(--line);border-radius:8px;background:var(--surface);font-size:13px;max-width:100%}
+
+.list{display:flex;flex-direction:column;background:var(--surface);border:1.5px solid var(--line);border-radius:10px;overflow:hidden}
+.group{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--sunk);padding:6px 14px;font-weight:600}
+.row{display:grid;grid-template-columns:86px minmax(0,1.3fr) minmax(0,1fr);gap:4px 12px;align-items:center;width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--line);padding:10px 14px}
+.row:hover{background:var(--sunk)}
+.row[aria-expanded="true"]{background:var(--accent-soft)}
+.name{font-weight:600;overflow-wrap:anywhere}
+.aka{color:var(--muted);font-weight:400;font-size:13px}
+.meta{color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
+.buy{font-size:13px;text-align:right;overflow-wrap:anywhere}
+.pill{display:inline-block;font-size:12px;font-weight:600;border-radius:5px;padding:2px 8px;text-align:center}
+.pill.Low{color:var(--low);background:var(--low-bg)} .pill.Out{color:var(--out);background:var(--out-bg)}
+.pill.Ordered{color:var(--ord);background:var(--ord-bg)} .pill.OK{color:var(--ok);background:var(--ok-bg)}
+.pill.None{color:var(--none);background:var(--none-bg)}
+@media (max-width:620px){
+  .row{grid-template-columns:auto minmax(0,1fr)}
+  .buy{grid-column:1 / -1;text-align:left}
+}
+
+.detail{border-top:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:14px;background:var(--surface)}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 18px;margin:0}
+.facts div{min-width:0}
+.facts dt{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.facts dd{margin:0;overflow-wrap:anywhere}
+.acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.acts .lab{font-size:12.5px;color:var(--muted);margin-right:2px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:left;font-weight:600}
+th,td{padding:6px 10px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td.r,th.r{text-align:right}
+.pref{color:var(--accent);font-weight:600}
+.hist{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:2px}
+h2{font-family:var(--display);font-size:17px;margin:0}
+.empty{padding:28px 16px;text-align:center;color:var(--muted);background:var(--surface);border:1.5px dashed var(--line);border-radius:10px}
+.panel{background:var(--surface);border:1.5px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px}
+.rowline{display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;align-items:center}
+.note{font-size:12.5px;color:var(--muted)}
+
+.sheet{position:fixed;inset:0;background:rgba(8,16,18,.55);display:flex;align-items:flex-end;justify-content:center;z-index:20;padding-top:env(safe-area-inset-top,0px)}
+.sheet form{background:var(--surface);width:min(620px,100%);max-height:92%;overflow:auto;border-radius:14px 14px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:12px}
+@media (min-width:700px){ .sheet{align-items:center} .sheet form{border-radius:14px} }
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px 12px}
+.f{display:flex;flex-direction:column;gap:3px;min-width:0}
+.f.wide{grid-column:1 / -1}
+.f label{font-size:12.5px;color:var(--muted)}
+.f input:not([type=checkbox]),.f select,.f textarea{padding:9px 10px;border:1.5px solid var(--line);border-radius:7px;background:var(--bg);width:100%;font-size:16px}
+.f.check{flex-direction:row;align-items:center;gap:8px}
+.f.check label{font-size:14px;color:var(--ink)}
+.err{color:var(--out);font-size:13px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;z-index:30;max-width:calc(100% - 32px)}
+.bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:flex-end}
+.who{font-size:13px;color:var(--muted)}
+.demo{background:var(--low-bg);color:var(--low);border-radius:8px;padding:9px 12px;font-size:13.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Shao Lab Inventory</h1>
+      <p class="sub">Reagents, where they are kept, and how to reorder them.</p>
+    </div>
+    <div class="bar">
+      <span class="who" id="who"></span>
+      <span class="who" id="sync"></span>
+      <button class="btn small" id="refreshBtn" type="button" hidden>Refresh</button>
+      <button class="btn small" id="exportBtn" type="button" hidden>Export CSV</button>
+      <button class="btn small" id="outBtn" type="button" hidden>Sign out</button>
+    </div>
+  </div>
+
+  <div class="demo" id="demo" hidden>Demo with made-up sample data: the prices and locations are invented. Changes are not saved and disappear when you reload. Connect the Google Sheet to use it for real.</div>
+
+  <div class="search">
+    <input id="q" type="search" autocomplete="off" placeholder="Search name, formula, CAS, catalog number, vendor or location" aria-label="Search the inventory">
+    <button class="btn primary" id="addBtn" type="button" hidden>Add item</button>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-items" data-tab="items" type="button">Inventory<span class="count" id="c-items">0</span></button>
+    <button class="tab" role="tab" id="tab-reorder" data-tab="reorder" type="button">Reorder<span class="count" id="c-reorder">0</span></button>
+    <button class="tab" role="tab" id="tab-activity" data-tab="activity" type="button">Activity</button>
+  </div>
+
+  <section id="v-items">
+    <div class="filters" id="filters"></div>
+    <div id="list" style="margin-top:10px"></div>
+  </section>
+  <section id="v-reorder" hidden></section>
+  <section id="v-activity" hidden></section>
+</div>
+<div class="sheet" id="sheet" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function(){
+"use strict";
+/* ============================================================
+   Paste the web app address from Google Apps Script between the quotes.
+   It looks like https://script.google.com/macros/s/AKfy.../exec
+   ============================================================ */
+var API_URL = "PASTE_WEB_APP_URL_HERE";
+
+var $ = function(id){ return document.getElementById(id); };
+function h(tag, props){
+  var el = document.createElement(tag), i, k;
+  if (props) for (k in props){
+    if (k === "class") el.className = props[k];
+    else if (k === "text") el.textContent = props[k];
+    else if (k.slice(0,2) === "on") el.addEventListener(k.slice(2), props[k]);
+    else if (props[k] === true) el.setAttribute(k, "");
+    else if (props[k] !== false && props[k] != null) el.setAttribute(k, props[k]);
+  }
+  for (i = 2; i < arguments.length; i++){
+    var c = arguments[i];
+    if (c == null || c === false) continue;
+    el.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  }
+  return el;
+}
+
+/* ---------- chemical formula typesetting (PbI2 -> PbI₂) ---------- */
+var EL = {}; ("H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Th U").split(" ").forEach(function(s){ EL[s] = 1; });
+function formulaParts(w){
+  var out = [], i = 0, sawEl = false, sawSub = false, lead = w.match(/^\d+(\.\d+)?/);
+  if (lead){ out.push([lead[0], false]); i = lead[0].length; }
+  while (i < w.length){
+    var two = w.substr(i, 2), one = w.charAt(i);
+    if (two.length === 2 && EL[two]){ out.push([two, false]); i += 2; sawEl = true; }
+    else if (EL[one]){ out.push([one, false]); i += 1; sawEl = true; }
+    else if (one === "(" || one === ")"){ out.push([one, false]); i += 1; }
+    else if (/\d/.test(one)){ if (!sawEl) return null; var m = w.slice(i).match(/^\d+/)[0]; out.push([m, true]); sawSub = true; i += m.length; }
+    else return null;
+  }
+  return sawEl && sawSub ? out : null;
+}
+function chem(name){
+  var frag = document.createDocumentFragment();
+  String(name || "").split(/(\s+)/).forEach(function(word){
+    var tail = (word.match(/[,;:]+$/) || [""])[0], core = tail ? word.slice(0, -tail.length) : word;
+    var d = core.match(/^(.*-d)(\d+)$/);
+    if (d){ frag.appendChild(document.createTextNode(d[1])); frag.appendChild(h("sub", {text: d[2]})); }
+    else core.split("·").forEach(function(part, n){
+      if (n) frag.appendChild(document.createTextNode("·"));
+      var p = formulaParts(part);
+      if (!p) frag.appendChild(document.createTextNode(part));
+      else p.forEach(function(x){ frag.appendChild(x[1] ? h("sub", {text: x[0]}) : document.createTextNode(x[0])); });
+    });
+    if (tail) frag.appendChild(document.createTextNode(tail));
+  });
+  return frag;
+}
+
+/* ---------- state ---------- */
+var S = { items: [], events: [], loaded: false, name: "", pass: "", role: null, canWrite: false,
+          tab: "items", q: "", status: "all", cat: "all", open: null, dead: null, locked: false, lastLoad: 0 };
+var KEY = "shaoLabInventory";
+var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Consumables","Glassware"];
+var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Received:"OK", OK:"OK" };
+
+function remember(){ try { localStorage.setItem(KEY, JSON.stringify({name:S.name, pass:S.pass})); } catch(e){} }
+function recall(){ try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch(e){ return null; } }
+function forget(){ try { localStorage.removeItem(KEY); } catch(e){} }
+
+function money(n){ return typeof n === "number" ? "$" + n.toFixed(2) : ""; }
+function pack(o){ return o && o.pack != null && o.pack !== "" ? o.pack + " " + (o.unit || "") : ""; }
+function prefOf(it){ var o = it.opts || []; for (var i = o.length - 1; i >= 0; i--) if (o[i].pref) return o[i]; return null; }
+function day(s){
+  if (!s) return "";
+  var d = new Date(String(s).replace(" ", "T")); if (isNaN(d)) return String(s);
+  return d.toLocaleDateString(undefined, {month:"short", day:"numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric"});
+}
+function statusOf(it){ return it.status || "None"; }
+function statusLabel(s){ return s === "None" ? "No report" : s; }
+function hay(it){
+  var p = [it.id, it.name, it.aka, it.cas, it.cat, it.loc, it.spec, it.source, it.notes];
+  (it.opts || []).forEach(function(o){ p.push(o.vendor, o.catalog, o.alt, o.grade); });
+  var s = p.filter(Boolean).join(" ").toLowerCase();
+  return s + " " + s.replace(/[^a-z0-9 ]/g, "");
+}
+function matches(it){
+  if (S.cat !== "all" && it.cat !== S.cat) return false;
+  if (S.status !== "all" && statusOf(it) !== S.status) return false;
+  var q = S.q.trim().toLowerCase(); if (!q) return true;
+  var hs = it._hay || (it._hay = hay(it));
+  return q.split(/\s+/).every(function(t){ var bare = t.replace(/[^a-z0-9]/g, ""); return hs.indexOf(t) >= 0 || (bare !== "" && hs.indexOf(bare) >= 0); });
+}
+function catRank(c){ var i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i; }
+function sorted(list){
+  return list.slice().sort(function(a, b){ return catRank(a.cat) - catRank(b.cat) || String(a.cat).localeCompare(String(b.cat)) || a.id.localeCompare(b.id); });
+}
+
+var toastT;
+function toast(msg, stay){ var t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); if (!stay) toastT = setTimeout(function(){ t.hidden = true; }, 3500); }
+function sync(text){ $("sync").textContent = text; }
+
+/* ---------- talking to the Google Sheet ---------- */
+var DEMO = false;
+function api(action, payload){
+  var body = Object.assign({action: action, pass: S.pass, user: S.name}, payload || {});
+  var call = DEMO ? Promise.resolve().then(function(){ return demoApi(body); })
+    : fetch(API_URL, {method: "POST", redirect: "follow", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(body)})
+        .then(function(r){ return r.json(); }, function(){ throw {error: "network"}; })
+        .catch(function(e){ throw (e && e.error) ? e : {error: "network"}; });
+  return call.then(function(d){
+      if (!d || !d.ok) throw (d || {error: "network"});
+      S.items = d.items || []; S.events = d.events || []; S.role = d.role; S.canWrite = d.role === "edit";
+      S.loaded = true; S.dead = null; S.lastLoad = Date.now();
+      sync("Updated " + new Date().toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
+      render();
+      return d;
+    });
+}
+/* ---------- demo: shown until API_URL is set. Sample rows only; nothing leaves the browser. ---------- */
+function dOpt(oid, vendor, catalog, grade, pk, unit, price, pref){ return {oid: oid, vendor: vendor, catalog: catalog, grade: grade, pack: pk, unit: unit, price: price, pref: pref, pnote: "", alt: "", checked: "", comment: ""}; }
+function dItem(id, name, aka, cas, cat, loc, min, unit, status, more, opts){
+  return Object.assign({id: id, name: name, aka: aka, cas: cas, cat: cat, loc: loc, min: min, unit: unit, stocked: "Yes", lead: false, exp: false, spec: "", source: "", notes: "",
+                        status: status, statusAt: "", statusBy: "", statusNote: status ? "Sample status" : "", opts: opts || []}, more || {});
+}
+var D = { n: 0, events: [], items: [
+  dItem("SOL-001", "Acetone", "", "67-64-1", "General organic solvents", "Flammables cabinet A", 10, "L", "OK", null, [dOpt("D1", "Sigma", "179124", "99.5%", 18, "L", 82, false), dOpt("D2", "Fisher", "A18-20", "99.5%", 20, "L", 80, true)]),
+  dItem("ANH-001", "N,N-Dimethylformamide, anhydrous", "DMF", "68-12-2", "Anhydrous solvents", "Flammables cabinet C", 300, "mL", "Low", null, [dOpt("D3", "Sigma", "227056", "99.8%", 1, "L", 85, false), dOpt("D4", "VWR", "DX1727-6", "99.8%", 1, "L", 95, true)]),
+  dItem("ANH-002", "Tetrahydrofuran, anhydrous", "THF", "109-99-9", "Anhydrous solvents", "Flammables cabinet C", 300, "mL", "Out", {exp: true, spec: "Needs stabilizer"}, [dOpt("D5", "Sigma", "401757", "99.9%", 1, "L", 95, true)]),
+  dItem("SLD-001", "NaOH", "sodium hydroxide", "1310-73-2", "General solids", "Solids cabinet", 200, "g", "", null, [dOpt("D6", "Sigma", "795429", "97%", 2500, "g", 99, true)]),
+  dItem("NMR-001", "Chloroform-d", "CDCl3", "865-49-6", "NMR solvents", "Fridge", 20, "mL", "OK", null, [dOpt("D7", "Sigma", "151823", "99.8%", 100, "g", 32, true)]),
+  dItem("PVK-001", "MAI", "methylammonium iodide", "14965-49-2", "PVSK reagents", "Glovebox", 1, "g", "OK", {lead: true}, [dOpt("D8", "Greatcellsolar", "MS101000", "99.99%", 50, "g", 90, true)]),
+  dItem("PVK-002", "PbI2", "lead iodide", "10101-63-0", "PVSK reagents", "Desiccator", 2, "g", "Ordered", {spec: "99.999%"}, [dOpt("D9", "Sigma", "203602", "99.999%", 50, "g", 145, true)]),
+  dItem("CON-001", "Kimwipes", "", "", "Consumables", "Shelf", 5, "box", "", null, [])
+] };
+function demoApi(b){
+  function find(id){ return D.items.filter(function(i){ return i.id === id; })[0]; }
+  function pick(src, keys){ var o = {}; keys.forEach(function(k){ if (src[k] !== undefined) o[k] = src[k]; }); return o; }
+  var d = new Date(), z = function(n){ return ("0" + n).slice(-2); };
+  var today = d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()), now = today + " " + z(d.getHours()) + ":" + z(d.getMinutes());
+  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","lead","exp","spec","notes"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
+  var out = {ok: true, role: "edit"}, it, o;
+  if (b.action === "report"){
+    it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
+    D.events.unshift({at: now, item: it.id, name: it.name, event: b.event, by: b.user, note: b.note || ""});
+    it.status = STATUS_OF[b.event]; it.statusAt = now; it.statusBy = b.user; it.statusNote = b.note || "";
+  } else if (b.action === "addItem"){
+    it = dItem("NEW-" + ("00" + (++D.n)).slice(-3), "", "", "", "", "", null, "", "", null, []);
+    Object.assign(it, pick(b.item, IK));
+    if (b.opt) it.opts.push(Object.assign(dOpt("N" + D.n, "", "", "", null, "", null, true), pick(b.opt, OK_), {pref: true, checked: b.opt.price == null ? "" : today}));
+    D.items.push(it); out.newId = it.id;
+  } else if (b.action === "updateItem"){
+    it = find(b.id); if (!it) return {ok: false, error: "not_found"};
+    Object.assign(it, pick(b.fields, IK));
+  } else if (b.action === "saveOption"){
+    it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
+    o = pick(b.opt, OK_);
+    if (o.pref) it.opts.forEach(function(x){ x.pref = false; });
+    var old = it.opts.filter(function(x){ return x.oid === b.oid; })[0];
+    if (old){ if (o.price != null && o.price !== old.price) o.checked = today; Object.assign(old, o); }
+    else it.opts.push(Object.assign(dOpt("N" + (++D.n), "", "", "", null, "", null, false), o, {checked: o.price == null ? "" : today}));
+  } else if (b.action === "deleteOption"){
+    D.items.forEach(function(i){ i.opts = i.opts.filter(function(x){ return x.oid !== b.oid; }); });
+  }
+  out.items = JSON.parse(JSON.stringify(D.items)); out.events = D.events.slice();
+  return out;
+}
+
+function problem(e){
+  var c = e && e.error;
+  if (c === "bad_passcode"){ forget(); S.pass = ""; showLogin("That passcode is not right, or it was changed. Enter the current one."); return "Sign in again."; }
+  if (c === "read_only") return "Not saved. You are signed in with the read-only passcode.";
+  if (c === "busy") return "Not saved. Someone else was saving at the same moment; try again.";
+  if (c === "not_found"){ load(true); return "Not saved. That row is no longer in the Sheet; the list was refreshed."; }
+  if (c === "not_set_up") return "The spreadsheet is not set up yet: " + (e.message || "run the Lab inventory menu in the Sheet.");
+  if (c === "invalid") return "Not saved. " + (e.message || "Check the form.");
+  if (c === "network") return "Could not reach the Google Sheet. Check the connection and try again.";
+  return "Something went wrong in the Sheet script: " + (e && e.message || "unknown error");
+}
+function load(quiet){
+  if (!quiet) sync("Loading…");
+  return api("load").catch(function(e){
+    var msg = problem(e);
+    if (e.error !== "bad_passcode"){ if (!S.loaded){ S.dead = msg; render(); } else toast(msg); sync("Not updated"); }
+  });
+}
+var busy = false;
+function save(action, payload, done){
+  if (busy) return Promise.reject({error: "busy"});
+  busy = true; toast("Saving…", true); sync("Saving…");
+  return api(action, payload).then(function(d){ busy = false; toast(done); return d; }, function(e){ busy = false; $("toast").hidden = true; sync("Not saved"); throw e; });
+}
+function quick(action, payload, done){ return function(){ save(action, payload, done).catch(function(e){ toast(problem(e)); }); }; }
+
+/* ---------- sign-in ---------- */
+function showLogin(message){
+  var s = $("sheet"), err = h("div", {class: "err", role: "alert", text: message || ""});
+  var name = h("input", {id: "f-login-name", type: "text", autocomplete: "name"}); name.value = S.name || "";
+  var pass = h("input", {id: "f-login-pass", type: "password", autocomplete: "current-password"});
+  var go = h("button", {class: "btn primary", type: "submit", text: "Open the inventory"});
+  var form = h("form", {novalidate: true, onsubmit: function(ev){
+    ev.preventDefault();
+    var n = name.value.trim(), p = pass.value.trim();
+    if (!n || !p){ err.textContent = "Enter your name and the lab passcode."; return; }
+    S.name = n; S.pass = p; go.disabled = true; err.textContent = "";
+    api("load").then(function(){ remember(); S.locked = false; s.hidden = true; s.textContent = ""; render(); },
+      function(e){ go.disabled = false; S.pass = ""; err.textContent = e.error === "bad_passcode" ? "That passcode is not right." : problem(e); });
+  }}, h("h2", {text: "Shao Lab Inventory"}),
+     h("p", {class: "note", text: "Your name is recorded next to every report you make. The edit passcode lets you make changes; the read-only passcode lets you look things up."}),
+     h("div", {class: "fields"},
+       h("div", {class: "f"}, h("label", {for: "f-login-name", text: "Your name"}), name),
+       h("div", {class: "f"}, h("label", {for: "f-login-pass", text: "Lab passcode"}), pass)),
+     err, h("div", {class: "acts"}, go));
+  S.locked = true; s.textContent = ""; s.appendChild(form); s.hidden = false; (S.name ? pass : name).focus();
+}
+function signOut(){ forget(); S.pass = ""; S.items = []; S.events = []; S.loaded = false; S.role = null; S.canWrite = false; render(); showLogin(""); }
+
+/* ---------- forms ---------- */
+function closeSheet(){ if (S.locked) return; var s = $("sheet"); s.hidden = true; s.textContent = ""; }
+function field(f, val){
+  var id = "f-" + f.k, input;
+  if (f.type === "check"){
+    input = h("input", {type: "checkbox", id: id}); input.checked = !!val;
+    return h("div", {class: "f check" + (f.wide ? " wide" : "")}, input, h("label", {for: id, text: f.label}));
+  }
+  if (f.type === "select"){
+    input = h("select", {id: id});
+    f.options.forEach(function(o){ input.appendChild(h("option", {value: o, text: o || "(none)"})); });
+    input.value = f.options.indexOf(val) >= 0 ? val : f.options[0];
+  } else if (f.type === "area"){
+    input = h("textarea", {id: id, rows: "2"}); input.value = val == null ? "" : val;
+  } else {
+    input = h("input", {id: id, type: f.type === "number" ? "number" : "text", step: f.type === "number" ? "any" : null, min: f.type === "number" ? "0" : null,
+                        list: f.list ? id + "-list" : null, autocomplete: "off", inputmode: f.type === "number" ? "decimal" : null});
+    input.value = val == null ? "" : val;
+  }
+  var wrap = h("div", {class: "f" + (f.wide ? " wide" : "")}, h("label", {for: id, text: f.label + (f.req ? " (required)" : "")}), input);
+  if (f.list){ var dl = h("datalist", {id: id + "-list"}); f.list.forEach(function(o){ dl.appendChild(h("option", {value: o})); }); wrap.appendChild(dl); }
+  return wrap;
+}
+function readField(f){
+  var el = $("f-" + f.k);
+  if (f.type === "check") return el.checked;
+  var v = el.value.trim();
+  if (f.type === "number") return v === "" ? null : Number(v);
+  return v;
+}
+function openSheet(title, fields, values, onSave, extra){
+  var s = $("sheet"), err = h("div", {class: "err", role: "alert"}), grid = h("div", {class: "fields"});
+  fields.forEach(function(f){
+    if (f.head){ grid.appendChild(h("h2", {style: "grid-column:1 / -1;margin-top:6px", text: f.head})); return; }
+    grid.appendChild(field(f, values[f.k]));
+  });
+  var btn = h("button", {class: "btn primary", type: "submit", text: "Save"});
+  var form = h("form", {novalidate: true, onsubmit: function(ev){
+    ev.preventDefault();
+    var out = {}, bad = null;
+    fields.forEach(function(f){ if (f.head) return; out[f.k] = readField(f); if (f.req && !out[f.k]) bad = bad || f.label; if (f.type === "number" && out[f.k] != null && !(out[f.k] >= 0)) bad = bad || f.label; });
+    if (bad){ err.textContent = bad + " is missing or not a valid number."; return; }
+    btn.disabled = true; err.textContent = "";
+    Promise.resolve().then(function(){ return onSave(out); }).then(closeSheet, function(e){ btn.disabled = false; var m = problem(e); if (!S.locked) err.textContent = m; });
+  }}, h("h2", {text: title}), grid, err,
+     h("div", {class: "acts"}, btn, h("button", {class: "btn", type: "button", text: "Cancel", onclick: closeSheet}), extra || null));
+  s.textContent = ""; s.appendChild(form); s.hidden = false;
+  var first = form.querySelector("input,select,textarea"); if (first) first.focus();
+}
+var UNITS = ["","L","mL","g","kg","box","bag","piece","roll","other"];
+function itemFields(adding){
+  var cats = CAT_ORDER.slice(); S.items.forEach(function(it){ if (it.cat && cats.indexOf(it.cat) < 0) cats.push(it.cat); });
+  var locs = []; S.items.forEach(function(it){ if (it.loc && locs.indexOf(it.loc) < 0) locs.push(it.loc); });
+  var f = [
+    {k: "name", label: "Name", req: true, wide: true},
+    {k: "aka", label: "Also called (abbreviations, separated by ;)"},
+    {k: "cas", label: "CAS number"},
+    {k: "cat", label: "Category", req: true, list: cats},
+    {k: "loc", label: "Where it is kept", list: locs},
+    {k: "min", label: "Minimum level", type: "number"},
+    {k: "unit", label: "Unit", type: "select", options: UNITS},
+    {k: "stocked", label: "Kept in stock?", type: "select", options: ["Yes","No","Personal","Not set"]},
+    {k: "spec", label: "Required grade or spec"},
+    {k: "lead", label: "Delivery takes more than 2 weeks", type: "check"},
+    {k: "exp", label: "Has an expiry date", type: "check"},
+    {k: "notes", label: "Notes", type: "area", wide: true}
+  ];
+  if (adding) f = f.concat([{head: "Where to buy it (optional)"}].concat(optFields("o_").filter(function(x){ return x.k !== "o_pref"; })));
+  return f;
+}
+function optFields(p){
+  p = p || "";
+  var vendors = []; S.items.forEach(function(it){ (it.opts || []).forEach(function(o){ if (o.vendor && vendors.indexOf(o.vendor) < 0) vendors.push(o.vendor); }); });
+  return [
+    {k: p + "vendor", label: "Vendor", req: !p, list: vendors},
+    {k: p + "catalog", label: "Catalog number"},
+    {k: p + "grade", label: "Grade"},
+    {k: p + "pack", label: "Pack size", type: "number"},
+    {k: p + "unit", label: "Pack unit", type: "select", options: UNITS},
+    {k: p + "price", label: "Price ($)", type: "number"},
+    {k: p + "pnote", label: "Price note (promotion, quote)"},
+    {k: p + "pref", label: "This is the preferred option", type: "check"},
+    {k: p + "comment", label: "Comment", wide: true}
+  ];
+}
+function optFrom(v, p){
+  p = p || "";
+  return { vendor: v[p + "vendor"], catalog: v[p + "catalog"], grade: v[p + "grade"], pack: v[p + "pack"], unit: v[p + "unit"],
+           price: v[p + "price"], pref: !!v[p + "pref"], pnote: v[p + "pnote"], comment: v[p + "comment"] };
+}
+function addItem(){
+  openSheet("Add an item", itemFields(true), {stocked: "Yes", unit: "g", o_unit: "g", name: S.q.trim()}, function(v){
+    var opt = v.o_vendor || v.o_catalog ? optFrom(v, "o_") : null;
+    return save("addItem", {item: v, opt: opt}, "Added " + v.name).then(function(d){
+      S.q = ""; $("q").value = ""; S.status = "all"; S.cat = "all"; S.open = d.newId; S.tab = "items"; render();
+    });
+  });
+}
+function editItem(it){
+  openSheet("Edit " + it.name, itemFields(false), it, function(v){ return save("updateItem", {id: it.id, fields: v}, "Saved " + v.name); });
+}
+function editOpt(it, o){
+  var adding = !o, del = adding ? null : h("button", {class: "btn", type: "button", text: "Remove option"});
+  if (del) del.addEventListener("click", function(){
+    if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Confirm remove"; return; }
+    del.disabled = true;
+    save("deleteOption", {oid: o.oid}, "Removed the " + (o.vendor || "vendor") + " option").then(closeSheet, function(e){ del.disabled = false; toast(problem(e)); });
+  });
+  openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields(), o || {unit: it.unit || "g", pref: !(it.opts || []).length}, function(v){
+    return save("saveOption", {itemId: it.id, oid: o ? o.oid : null, opt: optFrom(v)}, "Saved the " + v.vendor + " option");
+  }, del);
+}
+function reportWithNote(it){
+  openSheet("Report on " + it.name, [
+    {k: "event", label: "What happened", type: "select", options: ["Low","Out","Ordered","Received","OK"]},
+    {k: "note", label: "Note (how much is left, order number, who to ask)", type: "area", wide: true}
+  ], {event: "Low"}, function(v){ return save("report", {itemId: it.id, event: v.event, note: v.note}, it.name + " marked " + v.event.toLowerCase()); });
+}
+
+/* ---------- rendering ---------- */
+function by(name){ return name ? " by " + name : ""; }
+function statusLine(it){
+  var s = statusOf(it);
+  if (s === "None") return "Nobody has reported on this yet.";
+  var when = day(it.statusAt);
+  return statusLabel(s) + (when ? ", reported " + when : ", check date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "");
+}
+function fact(label, value){ return value ? h("div", null, h("dt", {text: label}), h("dd", null, value)) : null; }
+function detail(it){
+  var d = h("div", {class: "detail"});
+  d.appendChild(h("div", {class: "note", text: statusLine(it)}));
+  if (S.canWrite){
+    var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
+    ["Low","Out","Ordered","Received","OK"].forEach(function(ev){
+      acts.appendChild(h("button", {class: "btn small", type: "button", text: ev === "OK" ? "Checked, OK" : ev,
+        onclick: quick("report", {itemId: it.id, event: ev, note: ""}, it.name + " marked " + (ev === "OK" ? "checked OK" : ev.toLowerCase()))}));
+    });
+    acts.appendChild(h("button", {class: "btn small", type: "button", text: "With a note…", onclick: function(){ reportWithNote(it); }}));
+    d.appendChild(acts);
+  }
+  d.appendChild(h("dl", {class: "facts"},
+    fact("Where it is kept", it.loc),
+    fact("Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "No" ? "Not kept in stock" : it.stocked === "Personal" ? "Each person keeps their own" : "")),
+    fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
+    fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
+    fact("Source", it.source), fact("Notes", it.notes)));
+  var opts = it.opts || [];
+  if (opts.length){
+    var tb = h("tbody");
+    opts.forEach(function(o){
+      var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
+      tb.appendChild(h("tr", null,
+        h("td", {class: o.pref ? "pref" : ""}, (o.pref ? "★ " : "") + (o.vendor || "")),
+        h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
+        h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
+        h("td", {class: "r num", text: money(o.price)}), h("td", {class: "r num", text: per}),
+        h("td", null, [o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · ")),
+        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: "Edit", onclick: function(){ editOpt(it, o); }}) : null)));
+    });
+    d.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null,
+      h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Notes"}), h("th"))), tb)));
+  } else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
+  if (S.canWrite) d.appendChild(h("div", {class: "acts"},
+    h("button", {class: "btn small", type: "button", text: "Add vendor option", onclick: function(){ editOpt(it, null); }}),
+    h("button", {class: "btn small", type: "button", text: "Edit item", onclick: function(){ editItem(it); }})));
+  var hist = S.events.filter(function(e){ return e.item === it.id; }).slice(0, 5);
+  if (hist.length){
+    var hl = h("div", {class: "hist"});
+    hist.forEach(function(e){ hl.appendChild(h("div", {text: day(e.at) + " · " + (e.event === "OK" ? "Checked, OK" : e.event) + by(e.by) + (e.note ? " · " + e.note : "")})); });
+    d.appendChild(hl);
+  }
+  return d;
+}
+function renderFilters(){
+  var f = $("filters"), counts = {all: S.items.length, Low: 0, Out: 0, Ordered: 0, None: 0};
+  S.items.forEach(function(it){ var s = statusOf(it); if (counts[s] != null) counts[s]++; });
+  f.textContent = "";
+  [["all","All"],["Low","Low"],["Out","Out"],["Ordered","Ordered"],["None","No report"]].forEach(function(p){
+    f.appendChild(h("button", {class: "chip", type: "button", "aria-pressed": String(S.status === p[0]), onclick: function(){ S.status = p[0]; render(); }}, p[1] + " ", h("span", {class: "num", text: String(counts[p[0]])})));
+  });
+  var cats = []; sorted(S.items).forEach(function(it){ if (cats.indexOf(it.cat) < 0) cats.push(it.cat); });
+  var sel = h("select", {id: "catSel", "aria-label": "Category", onchange: function(){ S.cat = sel.value; render(); }}, h("option", {value: "all", text: "All categories"}));
+  cats.forEach(function(c){ sel.appendChild(h("option", {value: c, text: c})); });
+  sel.value = cats.indexOf(S.cat) >= 0 ? S.cat : "all";
+  f.appendChild(sel);
+}
+function renderItems(){
+  var box = $("list"); box.textContent = "";
+  if (S.dead){ box.appendChild(h("div", {class: "empty", text: S.dead})); return; }
+  if (!S.loaded){ box.appendChild(h("div", {class: "empty", text: S.pass ? "Loading the inventory…" : "Sign in to see the inventory."})); return; }
+  if (!S.items.length){ box.appendChild(h("div", {class: "empty", text: "Nothing is in the inventory yet. Use Add item to enter the first reagent."})); return; }
+  var list = sorted(S.items.filter(matches));
+  if (!list.length){
+    box.appendChild(h("div", {class: "empty"}, "Nothing matches “" + S.q.trim() + "”" + (S.status !== "all" || S.cat !== "all" ? " with these filters" : "") + ". ",
+      S.canWrite && S.q.trim() ? h("button", {class: "btn small", type: "button", text: "Add it as a new item", onclick: addItem}) : null));
+    return;
+  }
+  var wrap = h("div", {class: "list"}), last = null;
+  list.forEach(function(it){
+    if (it.cat !== last){ wrap.appendChild(h("div", {class: "group", text: it.cat || "Uncategorized"})); last = it.cat; }
+    var s = statusOf(it), p = prefOf(it), open = S.open === it.id;
+    var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
+    wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
+      h("span", {class: "pill " + s, text: statusLabel(s)}),
+      h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
+        h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", it.lead ? " · long lead time" : "")),
+      h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price)].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
+    if (open) wrap.appendChild(detail(it));
+  });
+  box.appendChild(wrap);
+}
+function reorderText(list){
+  return list.map(function(it){ var p = prefOf(it); return it.name + " (" + it.id + ", " + statusOf(it) + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
+}
+function renderReorder(){
+  var v = $("v-reorder"); v.textContent = "";
+  var need = sorted(S.items.filter(function(it){ var s = statusOf(it); return s === "Low" || s === "Out"; }));
+  var wait = sorted(S.items.filter(function(it){ return statusOf(it) === "Ordered"; }));
+  $("c-reorder").textContent = String(need.length);
+  function table(list, action, ev){
+    var tb = h("tbody"), total = 0;
+    list.forEach(function(it){
+      var p = prefOf(it); if (p && typeof p.price === "number") total += p.price;
+      var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
+      tb.appendChild(h("tr", null,
+        h("td", null, h("span", {class: "pill " + statusOf(it), text: statusOf(it)})),
+        h("td", null, nm, h("div", {class: "note", text: (day(it.statusAt) || "date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "")})),
+        h("td", {text: p ? p.vendor : "none recorded"}), h("td", {class: "mono", text: p ? p.catalog : ""}),
+        h("td", {class: "num", text: pack(p)}), h("td", {class: "r num", text: p ? money(p.price) : ""}),
+        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: quick("report", {itemId: it.id, event: ev, note: ""}, it.name + " marked " + ev.toLowerCase())}) : null)));
+    });
+    return {el: h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Status"}), h("th", {text: "Item"}), h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th"))), tb)), total: total};
+  }
+  var a = h("div", {class: "panel"});
+  if (!need.length) a.appendChild(h("p", {class: "note", text: S.loaded ? "Nothing is reported low or out. When someone marks an item Low or Out it appears here with its preferred vendor." : "Sign in to see the reorder list."}));
+  else {
+    var t = table(need, "Mark ordered", "Ordered");
+    a.appendChild(h("div", {class: "rowline"}, h("h2", {text: "To order"}), h("div", {class: "acts"},
+      h("span", {class: "num", text: "One pack each: " + money(t.total)}),
+      h("button", {class: "btn small", type: "button", text: "Copy list", onclick: function(){
+        (navigator.clipboard ? navigator.clipboard.writeText(reorderText(need)) : Promise.reject()).then(function(){ toast("Copied " + need.length + " items"); }, function(){ toast("Copying is blocked in this browser; select the table instead."); });
+      }}))));
+    a.appendChild(t.el);
+  }
+  v.appendChild(a);
+  if (wait.length){
+    var b = h("div", {class: "panel", style: "margin-top:14px"}, h("h2", {text: "Ordered, waiting for delivery"}));
+    b.appendChild(table(wait, "Mark received", "Received").el); v.appendChild(b);
+  }
+}
+function renderActivity(){
+  var v = $("v-activity"); v.textContent = "";
+  var p = h("div", {class: "panel"}, h("h2", {text: "Recent reports"}));
+  if (!S.events.length) p.appendChild(h("p", {class: "note", text: "No reports yet. Open an item and tap Low, Out, Ordered or Received; each tap is logged here with the date and who did it."}));
+  else {
+    var tb = h("tbody");
+    S.events.forEach(function(e){
+      var nm = h("span"); nm.appendChild(chem(e.name || e.item));
+      tb.appendChild(h("tr", null, h("td", {class: "num", text: day(e.at)}), h("td", null, h("span", {class: "pill " + (STATUS_OF[e.event] || "None"), text: e.event === "OK" ? "Checked" : e.event})),
+        h("td", null, nm, by(e.by)), h("td", {text: e.note || ""})));
+    });
+    p.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Date"}), h("th", {text: "Report"}), h("th", {text: "Item"}), h("th", {text: "Note"}))), tb)));
+  }
+  v.appendChild(p);
+}
+function render(){
+  ["items","reorder","activity"].forEach(function(t){
+    $("v-" + t).hidden = S.tab !== t; $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
+  });
+  $("c-items").textContent = String(S.items.length);
+  $("addBtn").hidden = !(S.canWrite && S.loaded);
+  $("exportBtn").hidden = !S.items.length;
+  $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
+  $("who").textContent = S.role ? S.name + (S.role === "edit" ? " · can edit" : " · read only") : "";
+  renderFilters(); renderItems(); renderReorder(); renderActivity();
+}
+
+/* ---------- export ---------- */
+function csvCell(v){ v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function exportCsv(){
+  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes",
+               "Vendor","Catalog #","Grade","Pack size","Pack unit","Price","Preferred","Price note","Alternative catalog #","Price checked on","Comment"]];
+  sorted(S.items).forEach(function(it){
+    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (it.statusAt || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes];
+    var opts = (it.opts || []).length ? it.opts : [null];
+    opts.forEach(function(o){ rows.push(base.concat(o ? [o.vendor, o.catalog, o.grade, o.pack, o.unit, o.price, o.pref ? "TRUE" : "FALSE", o.pnote, o.alt, o.checked, o.comment] : ["","","","","","","","","","",""])); });
+  });
+  var blob = new Blob(["﻿" + rows.map(function(r){ return r.map(csvCell).join(","); }).join("\n")], {type: "text/csv"});
+  var a = h("a", {href: URL.createObjectURL(blob), download: "shao-lab-inventory-" + new Date().toISOString().slice(0,10) + ".csv"});
+  document.body.appendChild(a); a.click(); a.remove(); window.__lastCsvRows = rows.length;
+}
+
+/* ---------- wiring ---------- */
+$("q").addEventListener("input", function(){ S.q = this.value; if (S.tab !== "items") S.tab = "items"; S.open = null; render(); });
+document.querySelectorAll(".tab").forEach(function(t){ t.addEventListener("click", function(){ S.tab = t.dataset.tab; render(); }); });
+$("addBtn").addEventListener("click", addItem);
+$("exportBtn").addEventListener("click", exportCsv);
+$("refreshBtn").addEventListener("click", function(){ load(); });
+$("outBtn").addEventListener("click", signOut);
+$("sheet").addEventListener("click", function(ev){ if (ev.target === this) closeSheet(); });
+document.addEventListener("keydown", function(ev){ if (ev.key === "Escape" && !$("sheet").hidden) closeSheet(); });
+document.addEventListener("visibilitychange", function(){
+  if (!document.hidden && S.role && $("sheet").hidden && !busy && Date.now() - S.lastLoad > 120000) load(true);
+});
+var hash = (location.hash || "").replace("#", ""); if (hash === "reorder" || hash === "activity") S.tab = hash;
+render();
+
+if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
+  /* Not connected yet: run the built-in demo so the interface can be tried. */
+  DEMO = true; S.name = "Demo user"; S.pass = "demo"; $("demo").hidden = false; load();
+} else {
+  if (window.__TEST_API__) API_URL = window.__TEST_API__;
+  var saved = recall();
+  if (saved && saved.name && saved.pass){ S.name = saved.name; S.pass = saved.pass; render(); load(); }
+  else showLogin("");
+}
+})();
+</script>
+</body>
+</html>
