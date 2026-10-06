@@ -243,6 +243,14 @@ function forget(){ try { localStorage.removeItem(KEY); } catch(e){} }
 function money(n){ return typeof n === "number" ? "$" + n.toFixed(2) : ""; }
 function pack(o){ return o && o.pack != null && o.pack !== "" ? o.pack + " " + (o.unit || "") : ""; }
 function prefOf(it){ var o = it.opts || []; for (var i = o.length - 1; i >= 0; i--) if (o[i].pref) return o[i]; return null; }
+/* The option to show for an item: the preferred one; if none is marked, the one bought most recently; if none was bought, the first. */
+function bestOf(it){
+  var p = prefOf(it); if (p) return p;
+  var o = (it.opts || []).filter(function(x){ return !x.hidden; }); if (!o.length) o = it.opts || [];
+  if (!o.length) return null;
+  var b = o.filter(function(x){ return x.last; }).sort(function(x, y){ return String(y.last).localeCompare(String(x.last)); })[0];
+  return b || o[0];
+}
 function day(s){
   if (!s) return "";
   s = String(s); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s += "T00:00";      /* a bare date is a local day, not midnight UTC */
@@ -626,13 +634,13 @@ function renderItems(){
   var wrap = h("div", {class: "list"}), last = null;
   list.forEach(function(it){
     if (it.cat !== last){ wrap.appendChild(h("div", {class: "group", text: it.cat || "Uncategorized"})); last = it.cat; }
-    var s = statusOf(it), k = kindOf(it), p = prefOf(it), open = S.open === it.id;
+    var s = statusOf(it), k = kindOf(it), p = bestOf(it), open = S.open === it.id, nOpt = (it.opts || []).length;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
       h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : s), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
         h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", it.lead ? " · long lead time" : "")),
-      h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price)].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
+      h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
     if (open) wrap.appendChild(detail(it));
   });
   var rv = reveal();
@@ -642,7 +650,7 @@ function renderItems(){
   box.appendChild(wrap);
 }
 function reorderText(list){
-  return list.map(function(it){ var p = prefOf(it); return it.name + " (" + it.id + ", " + statusOf(it) + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
+  return list.map(function(it){ var p = bestOf(it); return it.name + " (" + it.id + ", " + statusOf(it) + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
 }
 function renderReorder(){
   var v = $("v-reorder"); v.textContent = "";
@@ -652,7 +660,7 @@ function renderReorder(){
   function table(list, action, ev){
     var tb = h("tbody"), total = 0;
     list.forEach(function(it){
-      var p = prefOf(it); if (p && typeof p.price === "number") total += p.price;
+      var p = bestOf(it); if (p && typeof p.price === "number") total += p.price;
       var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
       tb.appendChild(h("tr", null,
         h("td", null, h("span", {class: "pill " + statusOf(it), text: statusOf(it)})),
