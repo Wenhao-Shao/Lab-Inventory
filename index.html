@@ -74,6 +74,11 @@ button{cursor:pointer}
 .pill.Low{color:var(--low);background:var(--low-bg)} .pill.Out{color:var(--out);background:var(--out-bg)}
 .pill.Ordered{color:var(--ord);background:var(--ord-bg)} .pill.OK{color:var(--ok);background:var(--ok-bg)}
 .pill.None{color:var(--none);background:var(--none-bg)}
+.pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
+.sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
+.morebar{border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--sunk);font-size:13px;color:var(--muted)}
+.dim td{color:var(--muted)}
+a{color:var(--accent)}
 @media (max-width:620px){
   .row{grid-template-columns:auto minmax(0,1fr)}
   .buy{grid-column:1 / -1;text-align:left}
@@ -121,7 +126,7 @@ h2{font-family:var(--display);font-size:17px;margin:0}
   <div class="top">
     <div>
       <h1>Shao Lab Inventory</h1>
-      <p class="sub">Reagents, where they are kept, and how to reorder them.</p>
+      <p class="sub">What the lab has, where it is kept, and how to reorder it.</p>
     </div>
     <div class="bar">
       <span class="who" id="who"></span>
@@ -135,7 +140,7 @@ h2{font-family:var(--display);font-size:17px;margin:0}
   <div class="demo" id="demo" hidden>Demo with made-up sample data: the prices and locations are invented. Changes are not saved and disappear when you reload. Connect the Google Sheet to use it for real.</div>
 
   <div class="search">
-    <input id="q" type="search" autocomplete="off" placeholder="Search name, formula, CAS, catalog number, vendor or location" aria-label="Search the inventory">
+    <input id="q" type="search" autocomplete="off" placeholder="Search name, size, CAS, catalog number, vendor or location" aria-label="Search the inventory">
     <button class="btn primary" id="addBtn" type="button" hidden>Add item</button>
   </div>
 
@@ -216,9 +221,19 @@ function chem(name){
 
 /* ---------- state ---------- */
 var S = { items: [], events: [], loaded: false, name: "", pass: "", role: null, canWrite: false,
-          tab: "items", q: "", status: "all", cat: "all", open: null, dead: null, locked: false, lastLoad: 0 };
+          tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "main", moreOpts: {}, open: null, dead: null, locked: false, lastLoad: 0 };
 var KEY = "shaoLabInventory";
-var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Consumables","Glassware"];
+var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Research chemicals",
+  "Gloves & PPE","Pipettes & tips","Filtration, syringes & needles","Vials, tubes & plates","Bottles & containers","Glassware","Stoppers, septa & joints","Stir bars",
+  "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
+  "Pumps & vacuum","Heating & baths","Clamps, stands & supports","Benchtop equipment","Consumables"];
+var KINDS = ["Stocked","On hand","Asset","Price only"];
+var KIND_NOTE = { "On hand": "On hand; not on the reorder list", "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
+/* Type and Show come from the Sheet. A Sheet that has not been updated yet has neither, so fall back to the old "Stocked" column. */
+function kindOf(it){ return KINDS.indexOf(it.type) >= 0 ? it.type : (it.stocked === "Yes" || it.stocked === "Not set" || !it.stocked ? "Stocked" : "On hand"); }
+function showOf(it){ return it.show === "Price list" || it.show === "More" ? it.show : "Main"; }
+function inScope(it){ var w = showOf(it); return w === "Main" || (w === "Price list" && S.scope !== "main") || (w === "More" && S.scope === "more"); }
+function noReport(it){ return statusOf(it) === "None" && kindOf(it) === "Stocked"; }
 var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Received:"OK", OK:"OK" };
 
 function remember(){ try { localStorage.setItem(KEY, JSON.stringify({name:S.name, pass:S.pass})); } catch(e){} }
@@ -230,27 +245,30 @@ function pack(o){ return o && o.pack != null && o.pack !== "" ? o.pack + " " + (
 function prefOf(it){ var o = it.opts || []; for (var i = o.length - 1; i >= 0; i--) if (o[i].pref) return o[i]; return null; }
 function day(s){
   if (!s) return "";
-  var d = new Date(String(s).replace(" ", "T")); if (isNaN(d)) return String(s);
+  s = String(s); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s += "T00:00";      /* a bare date is a local day, not midnight UTC */
+  var d = new Date(s.replace(" ", "T")); if (isNaN(d)) return s;
   return d.toLocaleDateString(undefined, {month:"short", day:"numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric"});
 }
 function statusOf(it){ return it.status || "None"; }
 function statusLabel(s){ return s === "None" ? "No report" : s; }
 function hay(it){
-  var p = [it.id, it.name, it.aka, it.cas, it.cat, it.loc, it.spec, it.source, it.notes];
+  var p = [it.id, it.name, it.aka, it.cas, it.cat, it.loc, it.spec, it.source, it.notes, kindOf(it)];
   (it.opts || []).forEach(function(o){ p.push(o.vendor, o.catalog, o.alt, o.grade); });
   var s = p.filter(Boolean).join(" ").toLowerCase();
   return s + " " + s.replace(/[^a-z0-9 ]/g, "");
 }
 function matches(it){
   if (S.cat !== "all" && it.cat !== S.cat) return false;
-  if (S.status !== "all" && statusOf(it) !== S.status) return false;
+  if (S.kind !== "all" && kindOf(it) !== S.kind) return false;
+  if (S.status !== "all" && (S.status === "None" ? !noReport(it) : statusOf(it) !== S.status)) return false;
   var q = S.q.trim().toLowerCase(); if (!q) return true;
   var hs = it._hay || (it._hay = hay(it));
   return q.split(/\s+/).every(function(t){ var bare = t.replace(/[^a-z0-9]/g, ""); return hs.indexOf(t) >= 0 || (bare !== "" && hs.indexOf(bare) >= 0); });
 }
 function catRank(c){ var i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i; }
 function sorted(list){
-  return list.slice().sort(function(a, b){ return catRank(a.cat) - catRank(b.cat) || String(a.cat).localeCompare(String(b.cat)) || a.id.localeCompare(b.id); });
+  var rank = {Main: 0, "Price list": 1, More: 2};
+  return list.slice().sort(function(a, b){ return catRank(a.cat) - catRank(b.cat) || String(a.cat).localeCompare(String(b.cat)) || rank[showOf(a)] - rank[showOf(b)] || a.id.localeCompare(b.id); });
 }
 
 var toastT;
@@ -295,7 +313,7 @@ function demoApi(b){
   function pick(src, keys){ var o = {}; keys.forEach(function(k){ if (src[k] !== undefined) o[k] = src[k]; }); return o; }
   var d = new Date(), z = function(n){ return ("0" + n).slice(-2); };
   var today = d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()), now = today + " " + z(d.getHours()) + ":" + z(d.getMinutes());
-  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","lead","exp","spec","notes"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
+  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
   var out = {ok: true, role: "edit"}, it, o;
   if (b.action === "report"){
     it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
@@ -382,8 +400,9 @@ function field(f, val){
   }
   if (f.type === "select"){
     input = h("select", {id: id});
-    f.options.forEach(function(o){ input.appendChild(h("option", {value: o, text: o || "(none)"})); });
-    input.value = f.options.indexOf(val) >= 0 ? val : f.options[0];
+    var choices = f.options.slice(); if (val != null && val !== "" && choices.indexOf(val) < 0) choices.push(val);
+    choices.forEach(function(o){ input.appendChild(h("option", {value: o, text: o || "(none)"})); });
+    input.value = choices.indexOf(val) >= 0 ? val : choices[0];
   } else if (f.type === "area"){
     input = h("textarea", {id: id, rows: "2"}); input.value = val == null ? "" : val;
   } else {
@@ -421,7 +440,7 @@ function openSheet(title, fields, values, onSave, extra){
   s.textContent = ""; s.appendChild(form); s.hidden = false;
   var first = form.querySelector("input,select,textarea"); if (first) first.focus();
 }
-var UNITS = ["","L","mL","g","kg","box","bag","piece","roll","other"];
+var UNITS = ["","L","mL","g","kg","box","bag","pack","pc","piece","roll","set","other"];
 function itemFields(adding){
   var cats = CAT_ORDER.slice(); S.items.forEach(function(it){ if (it.cat && cats.indexOf(it.cat) < 0) cats.push(it.cat); });
   var locs = []; S.items.forEach(function(it){ if (it.loc && locs.indexOf(it.loc) < 0) locs.push(it.loc); });
@@ -433,7 +452,7 @@ function itemFields(adding){
     {k: "loc", label: "Where it is kept", list: locs},
     {k: "min", label: "Minimum level", type: "number"},
     {k: "unit", label: "Unit", type: "select", options: UNITS},
-    {k: "stocked", label: "Kept in stock?", type: "select", options: ["Yes","No","Personal","Not set"]},
+    {k: "type", label: "Type (Stocked = reorder when low)", type: "select", options: KINDS},
     {k: "spec", label: "Required grade or spec"},
     {k: "lead", label: "Delivery takes more than 2 weeks", type: "check"},
     {k: "exp", label: "Has an expiry date", type: "check"},
@@ -448,7 +467,7 @@ function optFields(p){
   return [
     {k: p + "vendor", label: "Vendor", req: !p, list: vendors},
     {k: p + "catalog", label: "Catalog number"},
-    {k: p + "grade", label: "Grade"},
+    {k: p + "grade", label: "Grade, size or spec"},
     {k: p + "pack", label: "Pack size", type: "number"},
     {k: p + "unit", label: "Pack unit", type: "select", options: UNITS},
     {k: p + "price", label: "Price ($)", type: "number"},
@@ -463,15 +482,20 @@ function optFrom(v, p){
            price: v[p + "price"], pref: !!v[p + "pref"], pnote: v[p + "pnote"], comment: v[p + "comment"] };
 }
 function addItem(){
-  openSheet("Add an item", itemFields(true), {stocked: "Yes", unit: "g", o_unit: "g", name: S.q.trim()}, function(v){
+  openSheet("Add an item", itemFields(true), {type: "Stocked", unit: "", o_unit: "", name: S.q.trim()}, function(v){
     var opt = v.o_vendor || v.o_catalog ? optFrom(v, "o_") : null;
+    v.stocked = v.type === "Stocked" ? "Yes" : "No";
     return save("addItem", {item: v, opt: opt}, "Added " + v.name).then(function(d){
-      S.q = ""; $("q").value = ""; S.status = "all"; S.cat = "all"; S.open = d.newId; S.tab = "items"; render();
+      S.q = ""; $("q").value = ""; S.status = "all"; S.cat = "all"; S.kind = "all"; if (v.type === "Price only" && S.scope === "main") S.scope = "prices"; S.open = d.newId; S.tab = "items"; render();
     });
   });
 }
 function editItem(it){
-  openSheet("Edit " + it.name, itemFields(false), it, function(v){ return save("updateItem", {id: it.id, fields: v}, "Saved " + v.name); });
+  openSheet("Edit " + it.name, itemFields(false), Object.assign({}, it, {type: kindOf(it)}), function(v){
+    v.stocked = v.type === "Stocked" ? "Yes" : (it.stocked === "Personal" ? "Personal" : "No");
+    if (v.type === "Price only" && S.scope === "main") S.scope = "prices";
+    return save("updateItem", {id: it.id, fields: v}, "Saved " + v.name);
+  });
 }
 function editOpt(it, o){
   var adding = !o, del = adding ? null : h("button", {class: "btn", type: "button", text: "Remove option"});
@@ -495,7 +519,7 @@ function reportWithNote(it){
 function by(name){ return name ? " by " + name : ""; }
 function statusLine(it){
   var s = statusOf(it);
-  if (s === "None") return "Nobody has reported on this yet.";
+  if (s === "None") return kindOf(it) === "Stocked" ? "Nobody has reported on this yet." : KIND_NOTE[kindOf(it)] + ".";
   var when = day(it.statusAt);
   return statusLabel(s) + (when ? ", reported " + when : ", check date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "");
 }
@@ -514,25 +538,30 @@ function detail(it){
   }
   d.appendChild(h("dl", {class: "facts"},
     fact("Where it is kept", it.loc),
-    fact("Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "No" ? "Not kept in stock" : it.stocked === "Personal" ? "Each person keeps their own" : "")),
+    fact("Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "Personal" ? "Each person keeps their own" : kindOf(it) === "Stocked" ? "Not set yet" : "")),
+    fact("Type", kindOf(it)),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
     fact("Source", it.source), fact("Notes", it.notes)));
-  var opts = it.opts || [];
+  var all = it.opts || [], shownAll = !!S.moreOpts[it.id] || !all.some(function(o){ return !o.hidden; });
+  var opts = shownAll ? all : all.filter(function(o){ return !o.hidden; }), tucked = all.length - opts.length;
   if (opts.length){
     var tb = h("tbody");
     opts.forEach(function(o){
+      var link = /^https?:\/\//.test(o.link || "") ? h("a", {href: o.link, target: "_blank", rel: "noopener noreferrer", text: "product page"}) : null;
+      var bought = o.bought ? "bought " + o.bought + (o.bought === 1 ? " time" : " times") + (o.last ? ", last " + day(o.last) : "") : "";
       var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
-      tb.appendChild(h("tr", null,
+      tb.appendChild(h("tr", {class: o.hidden ? "dim" : null},
         h("td", {class: o.pref ? "pref" : ""}, (o.pref ? "★ " : "") + (o.vendor || "")),
         h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
         h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
         h("td", {class: "r num", text: money(o.price)}), h("td", {class: "r num", text: per}),
-        h("td", null, [o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · ")),
+        h("td", null, [bought, o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · "), link ? " " : null, link),
         h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: "Edit", onclick: function(){ editOpt(it, o); }}) : null)));
     });
     d.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null,
-      h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Notes"}), h("th"))), tb)));
+      h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Notes"}), h("th"))), tb)));
+    if (tucked) d.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "More: " + tucked + (tucked === 1 ? " other price row" : " other price rows"), onclick: function(){ S.moreOpts[it.id] = true; render(); }})));
   } else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
   if (S.canWrite) d.appendChild(h("div", {class: "acts"},
     h("button", {class: "btn small", type: "button", text: "Add vendor option", onclick: function(){ editOpt(it, null); }}),
@@ -546,41 +575,70 @@ function detail(it){
   return d;
 }
 function renderFilters(){
-  var f = $("filters"), counts = {all: S.items.length, Low: 0, Out: 0, Ordered: 0, None: 0};
-  S.items.forEach(function(it){ var s = statusOf(it); if (counts[s] != null) counts[s]++; });
+  var f = $("filters"), scoped = S.items.filter(inScope), counts = {all: scoped.length, Low: 0, Out: 0, Ordered: 0, None: 0};
+  scoped.forEach(function(it){ var s = statusOf(it); if (s === "None"){ if (noReport(it)) counts.None++; } else if (counts[s] != null) counts[s]++; });
+  var nPrice = 0, nMore = 0; S.items.forEach(function(it){ var w = showOf(it); if (w === "Price list") nPrice++; else if (w === "More") nMore++; });
   f.textContent = "";
   [["all","All"],["Low","Low"],["Out","Out"],["Ordered","Ordered"],["None","No report"]].forEach(function(p){
     f.appendChild(h("button", {class: "chip", type: "button", "aria-pressed": String(S.status === p[0]), onclick: function(){ S.status = p[0]; render(); }}, p[1] + " ", h("span", {class: "num", text: String(counts[p[0]])})));
   });
-  var cats = []; sorted(S.items).forEach(function(it){ if (cats.indexOf(it.cat) < 0) cats.push(it.cat); });
+  var ks = h("select", {id: "kindSel", "aria-label": "Type", onchange: function(){ S.kind = ks.value; render(); }}, h("option", {value: "all", text: "All types"}));
+  KINDS.forEach(function(k){ if (k !== "Price only" || S.scope !== "main") ks.appendChild(h("option", {value: k, text: k})); });
+  if (S.kind === "Price only" && S.scope === "main") S.kind = "all";
+  ks.value = S.kind; f.appendChild(ks);
+  var cats = []; sorted(scoped).forEach(function(it){ if (cats.indexOf(it.cat) < 0) cats.push(it.cat); });
   var sel = h("select", {id: "catSel", "aria-label": "Category", onchange: function(){ S.cat = sel.value; render(); }}, h("option", {value: "all", text: "All categories"}));
   cats.forEach(function(c){ sel.appendChild(h("option", {value: c, text: c})); });
-  sel.value = cats.indexOf(S.cat) >= 0 ? S.cat : "all";
+  if (cats.indexOf(S.cat) < 0) S.cat = "all";
+  sel.value = S.cat;
   f.appendChild(sel);
+  if (nPrice || nMore){
+    f.appendChild(h("span", {class: "sep"}));
+    f.appendChild(h("button", {class: "chip", id: "priceChip", type: "button", "aria-pressed": String(S.scope !== "main"), title: "Items the lab has a price for but no record of buying",
+      onclick: function(){ S.scope = S.scope === "main" ? "prices" : "main"; S.open = null; render(); }}, "Price list ", h("span", {class: "num", text: String(nPrice)})));
+    if (S.scope !== "main" && nMore) f.appendChild(h("button", {class: "chip", id: "moreChip", type: "button", "aria-pressed": String(S.scope === "more"), title: "Sizes that were hidden in the overseas price list",
+      onclick: function(){ S.scope = S.scope === "more" ? "prices" : "more"; S.open = null; render(); }}, "More ", h("span", {class: "num", text: String(nMore)})));
+  }
 }
 function renderItems(){
   var box = $("list"); box.textContent = "";
   if (S.dead){ box.appendChild(h("div", {class: "empty", text: S.dead})); return; }
   if (!S.loaded){ box.appendChild(h("div", {class: "empty", text: S.pass ? "Loading the inventory…" : "Sign in to see the inventory."})); return; }
-  if (!S.items.length){ box.appendChild(h("div", {class: "empty", text: "Nothing is in the inventory yet. Use Add item to enter the first reagent."})); return; }
-  var list = sorted(S.items.filter(matches));
+  if (!S.items.length){ box.appendChild(h("div", {class: "empty", text: "Nothing is in the inventory yet. Use Add item to enter the first reagent."})); $("c-items").textContent = "0"; return; }
+  var hits = S.items.filter(matches), list = sorted(hits.filter(inScope));
+  var inPrice = 0, inMore = 0; hits.forEach(function(it){ var w = showOf(it); if (w === "Price list") inPrice++; else if (w === "More") inMore++; });
+  /* Matches that are tucked away: one click shows them, so a search never looks empty when a price is on file. */
+  function reveal(){
+    var b = [];
+    if (S.scope === "main" && inPrice + inMore) b.push(h("button", {class: "btn small", id: "revealPrices", type: "button",
+      text: "Show " + (inPrice || inMore) + (inPrice ? " from the price list" : " from More"), onclick: function(){ S.scope = inPrice ? "prices" : "more"; render(); }}));
+    if (S.scope === "prices" && inMore) b.push(h("button", {class: "btn small", id: "revealMore", type: "button", text: "More: " + inMore + " hidden price-list " + (inMore === 1 ? "row" : "rows"), onclick: function(){ S.scope = "more"; render(); }}));
+    return b;
+  }
+  $("c-items").textContent = String(list.length);
   if (!list.length){
-    box.appendChild(h("div", {class: "empty"}, "Nothing matches “" + S.q.trim() + "”" + (S.status !== "all" || S.cat !== "all" ? " with these filters" : "") + ". ",
-      S.canWrite && S.q.trim() ? h("button", {class: "btn small", type: "button", text: "Add it as a new item", onclick: addItem}) : null));
+    var filtered = S.status !== "all" || S.cat !== "all" || S.kind !== "all", e = h("div", {class: "empty"}, (S.q.trim() ? "Nothing in the lab matches “" + S.q.trim() + "”" : "Nothing matches") + (filtered ? " with these filters" : "") + ". ");
+    reveal().forEach(function(b){ e.appendChild(b); e.appendChild(document.createTextNode(" ")); });
+    if (S.canWrite && S.q.trim()) e.appendChild(h("button", {class: "btn small", type: "button", text: "Add it as a new item", onclick: addItem}));
+    box.appendChild(e);
     return;
   }
   var wrap = h("div", {class: "list"}), last = null;
   list.forEach(function(it){
     if (it.cat !== last){ wrap.appendChild(h("div", {class: "group", text: it.cat || "Uncategorized"})); last = it.cat; }
-    var s = statusOf(it), p = prefOf(it), open = S.open === it.id;
+    var s = statusOf(it), k = kindOf(it), p = prefOf(it), open = S.open === it.id;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
-      h("span", {class: "pill " + s, text: statusLabel(s)}),
+      h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : s), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
         h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", it.lead ? " · long lead time" : "")),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price)].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
     if (open) wrap.appendChild(detail(it));
   });
+  var rv = reveal();
+  if (rv.length && (S.q.trim() || S.cat !== "all")){
+    var bar = h("div", {class: "morebar"}, "Also on file: "); rv.forEach(function(b){ bar.appendChild(b); }); wrap.appendChild(bar);
+  }
   box.appendChild(wrap);
 }
 function reorderText(list){
@@ -641,7 +699,6 @@ function render(){
   ["items","reorder","activity"].forEach(function(t){
     $("v-" + t).hidden = S.tab !== t; $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
   });
-  $("c-items").textContent = String(S.items.length);
   $("addBtn").hidden = !(S.canWrite && S.loaded);
   $("exportBtn").hidden = !S.items.length;
   $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
@@ -652,10 +709,10 @@ function render(){
 /* ---------- export ---------- */
 function csvCell(v){ v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 function exportCsv(){
-  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes",
+  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes","Type","Show",
                "Vendor","Catalog #","Grade","Pack size","Pack unit","Price","Preferred","Price note","Alternative catalog #","Price checked on","Comment"]];
   sorted(S.items).forEach(function(it){
-    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (it.statusAt || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes];
+    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (it.statusAt || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes, kindOf(it), showOf(it)];
     var opts = (it.opts || []).length ? it.opts : [null];
     opts.forEach(function(o){ rows.push(base.concat(o ? [o.vendor, o.catalog, o.grade, o.pack, o.unit, o.price, o.pref ? "TRUE" : "FALSE", o.pnote, o.alt, o.checked, o.comment] : ["","","","","","","","","","",""])); });
   });

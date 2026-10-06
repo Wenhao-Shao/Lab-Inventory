@@ -9,22 +9,29 @@
  *   2. Set passcodes    (one passcode that can edit, one that can only read)
  * Then Deploy > New deployment > Web app (Execute as: Me, Access: Anyone).
  *
+ * Item "Type": Stocked (reordered when low), On hand (in the lab, never flagged),
+ * Asset (equipment), Price only (a price on file, nothing bought).
+ * Item "Show": Main (listed by default), Price list (behind the price-list switch),
+ * More (rows that were hidden in the overseas price list).
+ *
  * The passcodes live in this script's properties, never in the web page.
  */
 
 var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events' };
 
 var ITEM_COLS = ['Item ID', 'Name', 'Also called', 'CAS', 'Category', 'Location', 'Min level', 'Unit', 'Stocked',
-  'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note'];
+  'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show'];
 var ITEM_KEYS = ['id', 'name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'stocked',
-  'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote'];
-var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't'];
-var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'stocked', 'lead', 'exp', 'spec', 'notes'];
+  'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote', 'type', 'show'];
+var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't', 't', 't'];
+var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 'lead', 'exp', 'spec', 'notes'];
+var ITEM_KINDS = ['Stocked', 'On hand', 'Asset', 'Price only'];
 
 var OPT_COLS = ['Option ID', 'Item ID', 'Vendor', 'Catalog #', 'Grade', 'Pack size', 'Pack unit', 'Price ($)',
-  'Preferred', 'Price note', 'Alternative catalog #', 'Price checked on', 'Comment'];
-var OPT_KEYS = ['oid', 'item', 'vendor', 'catalog', 'grade', 'pack', 'unit', 'price', 'pref', 'pnote', 'alt', 'checked', 'comment'];
-var OPT_TYPES = ['t', 't', 't', 't', 't', 'n', 't', 'p', 'b', 't', 't', 't', 't'];
+  'Preferred', 'Price note', 'Alternative catalog #', 'Price checked on', 'Comment', 'Link', 'Hidden in price list', 'Times bought', 'Last bought'];
+var OPT_KEYS = ['oid', 'item', 'vendor', 'catalog', 'grade', 'pack', 'unit', 'price', 'pref', 'pnote', 'alt', 'checked', 'comment', 'link', 'hidden', 'bought', 'last'];
+var OPT_TYPES = ['t', 't', 't', 't', 't', 'n', 't', 'p', 'b', 't', 't', 't', 't', 't', 'b', 'n', 't'];
+var OPT_KEPT = ['link', 'hidden', 'bought', 'last'];   // set by the purchase records, not edited in the page
 
 var EVENT_COLS = ['Date', 'Item ID', 'Item', 'Event', 'Reported by', 'Note'];
 var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
@@ -32,17 +39,23 @@ var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
 var STATUS_OF = { Low: 'Low', Out: 'Out', Ordered: 'Ordered', Received: 'OK', OK: 'OK' };
 var PREFIX = { 'General organic solvents': 'SOL', 'Spec/HPLC solvents': 'SPC', 'Anhydrous solvents': 'ANH',
   'General solids': 'SLD', 'General acids & bases': 'ACB', 'NMR solvents': 'NMR', 'PVSK reagents': 'PVK',
-  'Consumables': 'CON', 'Glassware': 'GLS' };
+  'Research chemicals': 'RCH', 'Gloves & PPE': 'PPE', 'Pipettes & tips': 'PIP', 'Filtration, syringes & needles': 'FIL',
+  'Vials, tubes & plates': 'VIA', 'Bottles & containers': 'BOT', 'Glassware': 'GLS', 'Stoppers, septa & joints': 'STP',
+  'Stir bars': 'STR', 'Substrates & microscopy': 'SUB', 'Chromatography & TLC': 'TLC', 'Hand tools & weighing': 'TOL',
+  'Cleaning & wipes': 'CLN', 'Tapes, films & general supplies': 'SUP', 'Desiccants': 'DES', 'Tubing & fluid transfer': 'TUB',
+  'Pumps & vacuum': 'PMP', 'Heating & baths': 'HEA', 'Clamps, stands & supports': 'CLP', 'Benchtop equipment': 'EQP',
+  'Consumables': 'CON' };
 var EVENTS_SENT = 150;
 
 /* ------------------------------------------------------------------ menu */
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('Lab inventory')
+  var menu = SpreadsheetApp.getUi().createMenu('Lab inventory')
     .addItem('1. Set up tabs', 'setup')
     .addItem('2. Set passcodes', 'setPasscodes')
-    .addItem('Check status', 'status')
-    .addToUi();
+    .addItem('Check status', 'status');
+  if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
+  menu.addToUi();
 }
 
 function setup() {
@@ -167,11 +180,15 @@ function addItem_(ss, body) {
   var items = ss.getSheetByName(TABS.items), pre = PREFIX[it.cat] || 'GEN';
   it.id = pre + '-' + ('00' + (maxNumber_(items, 1, pre + '-') + 1)).slice(-3);
   it.source = ''; it.status = ''; it.statusAt = ''; it.statusBy = ''; it.statusNote = '';
+  kind_(it);
+  cols_(items, ITEM_COLS);
   append_(items, itemRow_(it), ITEM_TYPES);
   if (body.opt && (body.opt.vendor || body.opt.catalog)) {
     var o = cleanOpt_(body.opt), opts = ss.getSheetByName(TABS.opts);
     o.oid = nextOid_(opts); o.item = it.id; o.pref = true; o.alt = '';
+    o.link = ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
+    cols_(opts, OPT_COLS);
     append_(opts, optRow_(o), OPT_TYPES);
   }
   return it.id;
@@ -180,10 +197,13 @@ function addItem_(ss, body) {
 function updateItem_(ss, body) {
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.id);
   if (!row) throw fail_('not_found');
+  cols_(items, ITEM_COLS);
   var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
+  if (ITEM_KINDS.indexOf(cur.type) < 0) cur.type = cur.stocked === 'Yes' ? 'Stocked' : 'On hand';
   var next = cleanItem_(body.fields || {});
   if (!next.name || !next.cat) throw fail_('invalid', 'Name and category are required.');
   ITEM_EDITABLE.forEach(function (k) { cur[k] = next[k]; });
+  kind_(cur);
   write_(items, row, [itemRow_(cur)], ITEM_TYPES);
 }
 
@@ -196,11 +216,13 @@ function saveOption_(ss, body) {
   var row = body.oid ? findRow_(opts, 1, body.oid) : 0;
   if (body.oid && !row) throw fail_('not_found');
   if (row) {
+    cols_(opts, OPT_COLS);
     var old = fromRow_(opts.getRange(row, 1, 1, OPT_KEYS.length).getValues()[0], OPT_KEYS, OPT_TYPES);
     o.oid = old.oid; o.alt = old.alt;
+    OPT_KEPT.forEach(function (k) { o[k] = old[k]; });
     o.checked = o.price != null && o.price !== old.price ? today_(ss) : old.checked;
   } else {
-    o.oid = nextOid_(opts); o.alt = '';
+    o.oid = nextOid_(opts); o.alt = ''; o.link = ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
   }
   if (o.pref) {
@@ -249,13 +271,14 @@ function readAll_(ss) {
 function rows_(sheet, keys, types) {
   var last = sheet.getLastRow();
   if (last < 2) return [];
-  return sheet.getRange(2, 1, last - 1, keys.length).getValues().map(function (r) { return fromRow_(r, keys, types); });
+  var width = Math.min(keys.length, sheet.getMaxColumns());
+  return sheet.getRange(2, 1, last - 1, width).getValues().map(function (r) { return fromRow_(r, keys, types); });
 }
 
 function fromRow_(r, keys, types) {
   var o = {};
   keys.forEach(function (k, i) {
-    var v = r[i], t = types[i];
+    var v = i < r.length ? r[i] : '', t = types[i];
     if (t === 'b') o[k] = v === true || String(v).toUpperCase() === 'TRUE';
     else if (t === 'n' || t === 'p') o[k] = v === '' || v == null || isNaN(Number(v)) ? null : Number(v);
     else o[k] = v instanceof Date ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm') : String(v == null ? '' : v);
@@ -275,13 +298,20 @@ function toRow_(o, keys, types) {
 }
 
 function cleanItem_(f) {
-  return { name: text_(f.name, 120), aka: text_(f.aka, 200), cas: text_(f.cas, 40), cat: text_(f.cat, 60), loc: text_(f.loc, 120),
-    min: num_(f.min), unit: text_(f.unit, 12), stocked: text_(f.stocked, 12) || 'Not set', lead: !!f.lead, exp: !!f.exp,
-    spec: text_(f.spec, 120), notes: text_(f.notes, 500) };
+  var type = text_(f.type, 12);
+  if (ITEM_KINDS.indexOf(type) < 0) type = f.stocked === 'Yes' || f.stocked == null || f.stocked === '' ? 'Stocked' : 'On hand';
+  return { name: text_(f.name, 160), aka: text_(f.aka, 200), cas: text_(f.cas, 40), cat: text_(f.cat, 60), loc: text_(f.loc, 120),
+    min: num_(f.min), unit: text_(f.unit, 16), type: type, lead: !!f.lead, exp: !!f.exp,
+    spec: text_(f.spec, 120), notes: text_(f.notes, 1000) };
+}
+/** Keeps the older "Stocked" column and the "Show" column in step with Type. */
+function kind_(it) {
+  it.stocked = it.type === 'Stocked' ? 'Yes' : (it.stocked === 'Personal' ? 'Personal' : 'No');
+  it.show = it.type === 'Price only' ? (it.show === 'More' ? 'More' : 'Price list') : 'Main';
 }
 function cleanOpt_(f) {
-  return { vendor: text_(f.vendor, 60), catalog: text_(f.catalog, 60), grade: text_(f.grade, 60), pack: num_(f.pack),
-    unit: text_(f.unit, 12), price: num_(f.price), pref: !!f.pref, pnote: text_(f.pnote, 120), comment: text_(f.comment, 500) };
+  return { vendor: text_(f.vendor, 80), catalog: text_(f.catalog, 60), grade: text_(f.grade, 160), pack: num_(f.pack),
+    unit: text_(f.unit, 16), price: num_(f.price), pref: !!f.pref, pnote: text_(f.pnote, 160), comment: text_(f.comment, 800) };
 }
 /** Trimmed text with a length cap; a leading "=" is dropped so nothing typed in the page can become a formula. */
 function text_(v, max) { return String(v == null ? '' : v).trim().replace(/^[=\s]+/, '').slice(0, max); }
@@ -299,7 +329,10 @@ function write_(sheet, row, rows, types, col) {
   range.setNumberFormats(rows.map(function () { return f; }));
   range.setValues(rows);
 }
-function append_(sheet, row, types) { write_(sheet, sheet.getLastRow() + 1, [row], types); }
+function append_(sheet, row, types) {
+  if (sheet.getMaxColumns() < row.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), row.length - sheet.getMaxColumns());
+  write_(sheet, sheet.getLastRow() + 1, [row], types);
+}
 
 function tab_(ss, name, cols, types) {
   var sheet = ss.getSheetByName(name) || ss.insertSheet(name);
@@ -308,6 +341,14 @@ function tab_(ss, name, cols, types) {
     sheet.setFrozenRows(1);
   }
   return sheet;
+}
+
+/** Makes sure the sheet is wide enough and has every header this script knows. */
+function cols_(sheet, cols) {
+  if (sheet.getMaxColumns() < cols.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), cols.length - sheet.getMaxColumns());
+  var head = sheet.getRange(1, 1, 1, cols.length).getValues()[0], changed = false;
+  cols.forEach(function (c, i) { if (String(head[i]) !== c) { head[i] = c; changed = true; } });
+  if (changed) sheet.getRange(1, 1, 1, cols.length).setValues([head]).setFontWeight('bold');
 }
 
 function findRow_(sheet, col, value) {
@@ -326,7 +367,7 @@ function maxNumber_(sheet, col, prefix) {
   });
   return max;
 }
-function nextOid_(opts) { return 'V-' + ('00' + (maxNumber_(opts, 1, 'V-') + 1)).slice(-3); }
+function nextOid_(opts) { return 'V-' + ('000' + (maxNumber_(opts, 1, 'V-') + 1)).slice(-4); }
 
 function now_(ss) { return Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm'); }
 function today_(ss) { return Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd'); }

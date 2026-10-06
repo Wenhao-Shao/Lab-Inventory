@@ -21,5 +21,7 @@ The page then asks each person for their name and a passcode. The edit passcode 
 ## Day to day
 
 - The three tabs (Items, Vendor options, Stock events) can also be edited directly in the Sheet. To delete an item, delete its row there.
+- Each item has a **Type**: Stocked (reordered when low), On hand (in the lab, never flagged), Asset (equipment), or Price only (a price on file, nothing bought). The page lists the first three by default. Price-only items appear when you press **Price list**, and the sizes that were hidden in the overseas price list appear under **More**.
+- The same rule applies to `Merge.gs` (the one-time load of the merged inventory): it holds storage locations, so it stays out of this repository.
 - After changing `Code.gs`, publish it with Deploy > Manage deployments > edit > New version. The web app address stays the same.
 - To change a passcode, run "2. Set passcodes" again. Everyone signs in again with the new one.
