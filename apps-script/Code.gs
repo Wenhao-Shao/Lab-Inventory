@@ -11,6 +11,8 @@
  *
  * Item "Type": Stocked (reordered when low), On hand (in the lab, never flagged),
  * Asset (equipment), Price only (a price on file, nothing bought).
+ * Item "Current level": the amount last reported on the shelf, in the item's unit. It is the last count
+ * someone typed in, not a live number: nothing lowers it when people use the item.
  * Item "Show": Main (listed by default), Price list (behind the price-list switch),
  * More (rows that were hidden in the overseas price list).
  *
@@ -20,11 +22,11 @@
 var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events' };
 
 var ITEM_COLS = ['Item ID', 'Name', 'Also called', 'CAS', 'Category', 'Location', 'Min level', 'Unit', 'Stocked',
-  'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show'];
+  'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show', 'Current level'];
 var ITEM_KEYS = ['id', 'name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'stocked',
-  'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote', 'type', 'show'];
-var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't', 't', 't'];
-var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 'lead', 'exp', 'spec', 'notes'];
+  'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote', 'type', 'show', 'level'];
+var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't', 't', 't', 'n'];
+var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 'lead', 'exp', 'spec', 'notes', 'level'];
 var ITEM_KINDS = ['Stocked', 'On hand', 'Asset', 'Price only'];
 
 var OPT_COLS = ['Option ID', 'Item ID', 'Vendor', 'Catalog #', 'Grade', 'Pack size', 'Pack unit', 'Price ($)',
@@ -36,7 +38,9 @@ var OPT_KEPT = ['link', 'hidden', 'bought', 'last'];   // set by the purchase re
 var EVENT_COLS = ['Date', 'Item ID', 'Item', 'Event', 'Reported by', 'Note'];
 var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
 
-var STATUS_OF = { Low: 'Low', Out: 'Out', Ordered: 'Ordered', Received: 'OK', OK: 'OK' };
+// Reports the page can send. "Stock" is a count of what is on the shelf; its status follows from the count and the min level.
+// "Received" and "OK" are kept so that events written before 8 Oct 2026, and an older copy of the page, still work.
+var STATUS_OF = { Low: 'Low', Out: 'Out', Ordered: 'Ordered', Stock: 'OK', Received: 'OK', OK: 'OK' };
 var PREFIX = { 'General organic solvents': 'SOL', 'Spec/HPLC solvents': 'SPC', 'Anhydrous solvents': 'ANH',
   'General solids': 'SLD', 'General acids & bases': 'ACB', 'NMR solvents': 'NMR', 'PVSK reagents': 'PVK',
   'Research chemicals': 'RCH', 'Gloves & PPE': 'PPE', 'Pipettes & tips': 'PIP', 'Filtration, syringes & needles': 'FIL',
@@ -172,12 +176,27 @@ function report_(ss, body, user) {
   if (!STATUS_OF[ev]) throw fail_('invalid', 'Unknown report type.');
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.itemId);
   if (!row) throw fail_('not_found');
-  var name = String(items.getRange(row, 2).getValue()), when = now_(ss), note = text_(body.note, 300);
-  append_(ss.getSheetByName(TABS.events), [when, String(body.itemId), name, ev, user, note], EVENT_TYPES);
-  var c = ITEM_KEYS.indexOf('status') + 1;
-  write_(items, row, [[STATUS_OF[ev], when, user, note]], ['t', 't', 't', 't'], c);
-  return { item: { id: String(body.itemId), status: STATUS_OF[ev], statusAt: when, statusBy: user, statusNote: note },
-           event: { at: when, item: String(body.itemId), name: name, event: ev, by: user, note: note } };
+  cols_(items, ITEM_COLS);
+  var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
+  var when = now_(ss), status = STATUS_OF[ev], level = cur.level, unit = cur.unit || text_(body.unit, 16);
+  var given = num_(body.level), note = text_(body.note, 300);
+  function amount(n, u) { return String(n) + (u ? ' ' + u : ''); }
+  if (ev === 'Out') { level = 0; }
+  else if (ev === 'Low') { if (given != null) { level = given; note = amount(given, unit) + ' left'; } }
+  else if (ev === 'Stock') {
+    if (given == null) throw fail_('invalid', 'Enter how much is on the shelf.');
+    level = given; note = amount(given, unit);
+    status = given === 0 ? 'Out' : (cur.min != null && given < cur.min ? 'Low' : 'OK');
+  } else if (ev === 'Ordered') {
+    var qty = num_(body.qty), qunit = text_(body.qunit, 16);
+    if (qty != null) note = 'Ordered ' + amount(qty, qunit);
+  }
+  append_(ss.getSheetByName(TABS.events), [when, String(body.itemId), cur.name, ev, user, note], EVENT_TYPES);
+  write_(items, row, [[status, when, user, note]], ['t', 't', 't', 't'], ITEM_KEYS.indexOf('status') + 1);
+  if (level !== cur.level) write_(items, row, [[level == null ? '' : level]], ['n'], ITEM_KEYS.indexOf('level') + 1);
+  if (unit !== cur.unit) write_(items, row, [[unit]], ['t'], ITEM_KEYS.indexOf('unit') + 1);
+  return { item: { id: String(body.itemId), status: status, statusAt: when, statusBy: user, statusNote: note, level: level, unit: unit },
+           event: { at: when, item: String(body.itemId), name: cur.name, event: ev, by: user, note: note } };
 }
 
 function addItem_(ss, body) {
@@ -210,7 +229,8 @@ function updateItem_(ss, body) {
   if (ITEM_KINDS.indexOf(cur.type) < 0) cur.type = cur.stocked === 'Yes' ? 'Stocked' : 'On hand';
   var next = cleanItem_(body.fields || {});
   if (!next.name || !next.cat) throw fail_('invalid', 'Name and category are required.');
-  ITEM_EDITABLE.forEach(function (k) { cur[k] = next[k]; });
+  var sent = body.fields || {};
+  ITEM_EDITABLE.forEach(function (k) { if (k === 'level' && sent.level === undefined) return; cur[k] = next[k]; });   // an older page does not send the level
   kind_(cur);
   write_(items, row, [itemRow_(cur)], ITEM_TYPES);
   return { item: cur };
@@ -335,7 +355,7 @@ function cleanItem_(f) {
   if (ITEM_KINDS.indexOf(type) < 0) type = f.stocked === 'Yes' || f.stocked == null || f.stocked === '' ? 'Stocked' : 'On hand';
   return { name: text_(f.name, 160), aka: text_(f.aka, 200), cas: text_(f.cas, 40), cat: text_(f.cat, 60), loc: text_(f.loc, 120),
     min: num_(f.min), unit: text_(f.unit, 16), type: type, lead: !!f.lead, exp: !!f.exp,
-    spec: text_(f.spec, 120), notes: text_(f.notes, 1000) };
+    spec: text_(f.spec, 120), notes: text_(f.notes, 1000), level: num_(f.level) };
 }
 /** Keeps the older "Stocked" column and the "Show" column in step with Type. */
 function kind_(it) {

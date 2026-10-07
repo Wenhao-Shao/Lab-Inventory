@@ -235,7 +235,19 @@ function kindOf(it){ return KINDS.indexOf(it.type) >= 0 ? it.type : (it.stocked 
 function showOf(it){ return it.show === "Price list" || it.show === "More" ? it.show : "Main"; }
 function inScope(it){ var w = showOf(it); return w === "Main" || (w === "Price list" && S.scope !== "main") || (w === "More" && S.scope === "more"); }
 function noReport(it){ return statusOf(it) === "None" && kindOf(it) === "Stocked"; }
-var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Received:"OK", OK:"OK" };
+var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Stock:"OK", Received:"OK", OK:"OK" };   /* Received and OK are reports made before 8 Oct 2026 */
+function evLabel(ev){ return ev === "Stock" ? "Stock count" : ev === "OK" ? "Checked" : ev; }
+function hasLevel(it){ return typeof it.level === "number"; }
+function amount(n, unit){ return n + (unit ? " " + unit : ""); }
+/* What a report does to an item. The Sheet script applies the same rules; its answer replaces this one. */
+function outcome(it, ev, d){
+  var unit = it.unit || d.unit || "", o = {status: STATUS_OF[ev], level: hasLevel(it) ? it.level : null, unit: unit, note: ""};
+  if (ev === "Out") o.level = 0;
+  else if (ev === "Low"){ if (d.level != null){ o.level = d.level; o.note = amount(d.level, unit) + " left"; } }
+  else if (ev === "Stock"){ o.level = d.level; o.note = amount(d.level, unit); o.status = d.level === 0 ? "Out" : (typeof it.min === "number" && d.level < it.min ? "Low" : "OK"); }
+  else if (ev === "Ordered"){ if (d.qty != null) o.note = "Ordered " + amount(d.qty, d.qunit || ""); }
+  return o;
+}
 
 function remember(){ try { localStorage.setItem(KEY, JSON.stringify({name:S.name, pass:S.pass})); } catch(e){} }
 function recall(){ try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch(e){ return null; } }
@@ -359,12 +371,13 @@ function demoApi(b){
   function pick(src, keys){ var o = {}; keys.forEach(function(k){ if (src[k] !== undefined) o[k] = src[k]; }); return o; }
   var d = new Date(), z = function(n){ return ("0" + n).slice(-2); };
   var today = d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()), now = today + " " + z(d.getHours()) + ":" + z(d.getMinutes());
-  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
+  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes","level"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
   var out = {ok: true, role: "edit"}, it, o;
   if (b.action === "report"){
     it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
-    D.events.unshift({at: now, item: it.id, name: it.name, event: b.event, by: b.user, note: b.note || ""});
-    it.status = STATUS_OF[b.event]; it.statusAt = now; it.statusBy = b.user; it.statusNote = b.note || "";
+    var oc = outcome(it, b.event, b);
+    D.events.unshift({at: now, item: it.id, name: it.name, event: b.event, by: b.user, note: oc.note});
+    it.status = oc.status; it.statusAt = now; it.statusBy = b.user; it.statusNote = oc.note; it.level = oc.level; it.unit = oc.unit;
   } else if (b.action === "addItem"){
     it = dItem("NEW-" + ("00" + (++D.n)).slice(-3), "", "", "", "", "", null, "", "", null, []);
     Object.assign(it, pick(b.item, IK));
@@ -419,19 +432,34 @@ function save(action, payload, done){
 }
 function stamp(){ var d = new Date(), z = function(n){ return ("0" + n).slice(-2); }; return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + " " + z(d.getHours()) + ":" + z(d.getMinutes()); }
 /* A report shows on the page at once and is saved in the background. If the save fails, the page goes back to what it showed before. */
-function report(it, ev, note){
-  note = note || "";
-  var before = {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote}, now = stamp();
-  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: note};
-  Object.assign(it, {status: STATUS_OF[ev], statusAt: now, statusBy: S.name, statusNote: note}); S.events.unshift(le);
-  render(); toast(it.name + " marked " + (ev === "OK" ? "checked OK" : ev.toLowerCase())); sync("Saving…");
-  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, note: note}, {localEvent: le}); }).catch(function(e){
+function report(it, ev, d){
+  d = d || {};
+  var before = {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote, level: it.level, unit: it.unit}, now = stamp(), oc = outcome(it, ev, d);
+  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note};
+  Object.assign(it, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: oc.note, level: oc.level, unit: oc.unit}); S.events.unshift(le);
+  render(); sync("Saving…");
+  toast(ev === "Stock" ? it.name + ": " + oc.note + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : it.name + " marked " + ev.toLowerCase());
+  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, note: ""}, {localEvent: le}); }).catch(function(e){
     var cur = itemById(it.id); if (cur) Object.assign(cur, before);
     var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
     sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
   });
 }
-function quickReport(it, ev){ return function(){ report(it, ev, ""); }; }
+/* The three reports that ask for a number. The unit is the item's own; it is asked for only when the item has none yet. */
+function unitField(it, k){ return {k: k, label: it.unit ? "Unit (set on the item)" : "Unit", list: UNITS.filter(Boolean), readonly: !!it.unit}; }
+function askLow(it){
+  openSheet(it.name + " is low", [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")],
+    {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit}); });
+}
+function askStock(it){
+  openSheet("Stock of " + it.name, [{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")],
+    {unit: it.unit || "", level: hasLevel(it) ? it.level : null}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit}); });
+}
+function askOrdered(it){
+  var p = bestOf(it);
+  openSheet("Ordered " + it.name, [{k: "qty", label: "How many were ordered", type: "number"}, {k: "qunit", label: "Unit", list: UNITS.filter(Boolean)}],
+    {qunit: it.unit || (p && p.unit) || ""}, function(v){ report(it, "Ordered", {qty: v.qty, qunit: v.qunit}); });
+}
 
 /* ---------- sign-in ---------- */
 function showLogin(message){
@@ -475,6 +503,7 @@ function field(f, val){
     input = h("input", {id: id, type: f.type === "number" ? "number" : "text", step: f.type === "number" ? "any" : null, min: f.type === "number" ? "0" : null,
                         list: f.list ? id + "-list" : null, autocomplete: "off", inputmode: f.type === "number" ? "decimal" : null});
     input.value = val == null ? "" : val;
+    if (f.readonly){ input.readOnly = true; input.tabIndex = -1; }
   }
   var wrap = h("div", {class: "f" + (f.wide ? " wide" : "")}, h("label", {for: id, text: f.label + (f.req ? " (required)" : "")}), input);
   if (f.list){ var dl = h("datalist", {id: id + "-list"}); f.list.forEach(function(o){ dl.appendChild(h("option", {value: o})); }); wrap.appendChild(dl); }
@@ -497,14 +526,14 @@ function openSheet(title, fields, values, onSave, extra){
   var form = h("form", {novalidate: true, onsubmit: function(ev){
     ev.preventDefault();
     var out = {}, bad = null;
-    fields.forEach(function(f){ if (f.head) return; out[f.k] = readField(f); if (f.req && !out[f.k]) bad = bad || f.label; if (f.type === "number" && out[f.k] != null && !(out[f.k] >= 0)) bad = bad || f.label; });
+    fields.forEach(function(f){ if (f.head) return; out[f.k] = readField(f); if (f.req && (f.type === "number" ? out[f.k] == null : !out[f.k])) bad = bad || f.label; if (f.type === "number" && out[f.k] != null && !(out[f.k] >= 0)) bad = bad || f.label; });
     if (bad){ err.textContent = bad + " is missing or not a valid number."; return; }
     btn.disabled = true; err.textContent = "";
     Promise.resolve().then(function(){ return onSave(out); }).then(closeSheet, function(e){ btn.disabled = false; var m = problem(e); if (!S.locked) err.textContent = m; });
   }}, h("h2", {text: title}), grid, err,
      h("div", {class: "acts"}, btn, h("button", {class: "btn", type: "button", text: "Cancel", onclick: closeSheet}), extra || null));
   s.textContent = ""; s.appendChild(form); s.hidden = false;
-  var first = form.querySelector("input,select,textarea"); if (first) first.focus();
+  var first = form.querySelector("input:not([readonly]),select,textarea"); if (first){ first.focus(); if (first.select && first.type === "number") first.select(); }
 }
 var UNITS = ["","L","mL","g","kg","box","bag","pack","pc","piece","roll","set","other"];
 function itemFields(adding){
@@ -518,6 +547,7 @@ function itemFields(adding){
     {k: "loc", label: "Where it is kept", list: locs},
     {k: "min", label: "Minimum level", type: "number"},
     {k: "unit", label: "Unit", type: "select", options: UNITS},
+    {k: "level", label: "On the shelf now (last count)", type: "number"},
     {k: "type", label: "Type (Stocked = reorder when low)", type: "select", options: KINDS},
     {k: "spec", label: "Required grade or spec"},
     {k: "lead", label: "Delivery takes more than 2 weeks", type: "check"},
@@ -574,13 +604,6 @@ function editOpt(it, o){
     return save("saveOption", {itemId: it.id, oid: o ? o.oid : null, opt: optFrom(v)}, "Saved the " + v.vendor + " option");
   }, del);
 }
-function reportWithNote(it){
-  openSheet("Report on " + it.name, [
-    {k: "event", label: "What happened", type: "select", options: ["Low","Out","Ordered","Received","OK"]},
-    {k: "note", label: "Note (how much is left, order number, who to ask)", type: "area", wide: true}
-  ], {event: "Low"}, function(v){ report(it, v.event, v.note); });
-}
-
 /* ---------- rendering ---------- */
 function by(name){ return name ? " by " + name : ""; }
 function statusLine(it){
@@ -595,16 +618,15 @@ function detail(it){
   d.appendChild(h("div", {class: "note", text: statusLine(it)}));
   if (S.canWrite){
     var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
-    ["Low","Out","Ordered","Received","OK"].forEach(function(ev){
-      acts.appendChild(h("button", {class: "btn small", type: "button", text: ev === "OK" ? "Checked, OK" : ev,
-        onclick: quickReport(it, ev)}));
+    [["Low", function(){ askLow(it); }], ["Out", function(){ report(it, "Out"); }], ["Ordered", function(){ askOrdered(it); }], ["Report stock", function(){ askStock(it); }]].forEach(function(b){
+      acts.appendChild(h("button", {class: "btn small", type: "button", text: b[0], onclick: b[1]}));
     });
-    acts.appendChild(h("button", {class: "btn small", type: "button", text: "With a note…", onclick: function(){ reportWithNote(it); }}));
     d.appendChild(acts);
   }
   d.appendChild(h("dl", {class: "facts"},
     fact("Where it is kept", it.loc),
     fact("Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "Personal" ? "Each person keeps their own" : kindOf(it) === "Stocked" ? "Not set yet" : "")),
+    fact("On the shelf", hasLevel(it) ? amount(it.level, it.unit) + " at the last count" + (it.statusAt ? " (" + day(it.statusAt) + ")" : "") : ""),
     fact("Type", kindOf(it)),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
@@ -635,7 +657,7 @@ function detail(it){
   var hist = S.events.filter(function(e){ return e.item === it.id; }).slice(0, 5);
   if (hist.length){
     var hl = h("div", {class: "hist"});
-    hist.forEach(function(e){ hl.appendChild(h("div", {text: day(e.at) + " · " + (e.event === "OK" ? "Checked, OK" : e.event) + by(e.by) + (e.note ? " · " + e.note : "")})); });
+    hist.forEach(function(e){ hl.appendChild(h("div", {text: day(e.at) + " · " + evLabel(e.event) + by(e.by) + (e.note ? " · " + e.note : "")})); });
     d.appendChild(hl);
   }
   return d;
@@ -697,7 +719,7 @@ function renderItems(){
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
       h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : s), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
-        h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", it.lead ? " · long lead time" : "")),
+        h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", hasLevel(it) ? " · " + amount(it.level, it.unit) + " on shelf" : "", it.lead ? " · long lead time" : "")),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
     if (open) wrap.appendChild(detail(it));
   });
@@ -715,24 +737,24 @@ function renderReorder(){
   var need = sorted(S.items.filter(function(it){ var s = statusOf(it); return s === "Low" || s === "Out"; }));
   var wait = sorted(S.items.filter(function(it){ return statusOf(it) === "Ordered"; }));
   $("c-reorder").textContent = String(need.length);
-  function table(list, action, ev){
+  function table(list, action, ask){
     var tb = h("tbody"), total = 0;
     list.forEach(function(it){
       var p = bestOf(it); if (p && typeof p.price === "number") total += p.price;
       var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
       tb.appendChild(h("tr", null,
         h("td", null, h("span", {class: "pill " + statusOf(it), text: statusOf(it)})),
-        h("td", null, nm, h("div", {class: "note", text: (day(it.statusAt) || "date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "")})),
+        h("td", null, nm, h("div", {class: "note", text: (day(it.statusAt) || "date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "") + (typeof it.min === "number" ? " · min " + amount(it.min, it.unit) : "")})),
         h("td", {text: p ? p.vendor : "none recorded"}), h("td", {class: "mono", text: p ? p.catalog : ""}),
         h("td", {class: "num", text: pack(p)}), h("td", {class: "r num", text: p ? money(p.price) : ""}),
-        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: quickReport(it, ev)}) : null)));
+        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: function(){ ask(it); }}) : null)));
     });
     return {el: h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Status"}), h("th", {text: "Item"}), h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th"))), tb)), total: total};
   }
   var a = h("div", {class: "panel"});
   if (!need.length) a.appendChild(h("p", {class: "note", text: S.loaded ? "Nothing is reported low or out. When someone marks an item Low or Out it appears here with its preferred vendor." : "Sign in to see the reorder list."}));
   else {
-    var t = table(need, "Mark ordered", "Ordered");
+    var t = table(need, "Mark ordered", askOrdered);
     a.appendChild(h("div", {class: "rowline"}, h("h2", {text: "To order"}), h("div", {class: "acts"},
       h("span", {class: "num", text: "One pack each: " + money(t.total)}),
       h("button", {class: "btn small", type: "button", text: "Copy list", onclick: function(){
@@ -743,18 +765,18 @@ function renderReorder(){
   v.appendChild(a);
   if (wait.length){
     var b = h("div", {class: "panel", style: "margin-top:14px"}, h("h2", {text: "Ordered, waiting for delivery"}));
-    b.appendChild(table(wait, "Mark received", "Received").el); v.appendChild(b);
+    b.appendChild(table(wait, "It arrived: report stock", askStock).el); v.appendChild(b);
   }
 }
 function renderActivity(){
   var v = $("v-activity"); v.textContent = "";
   var p = h("div", {class: "panel"}, h("h2", {text: "Recent reports"}));
-  if (!S.events.length) p.appendChild(h("p", {class: "note", text: "No reports yet. Open an item and tap Low, Out, Ordered or Received; each tap is logged here with the date and who did it."}));
+  if (!S.events.length) p.appendChild(h("p", {class: "note", text: "No reports yet. Open an item and tap Low, Out, Ordered or Report stock; each report is logged here with the date and who made it."}));
   else {
     var tb = h("tbody");
     S.events.forEach(function(e){
       var nm = h("span"); nm.appendChild(chem(e.name || e.item));
-      tb.appendChild(h("tr", null, h("td", {class: "num", text: day(e.at)}), h("td", null, h("span", {class: "pill " + (STATUS_OF[e.event] || "None"), text: e.event === "OK" ? "Checked" : e.event})),
+      tb.appendChild(h("tr", null, h("td", {class: "num", text: day(e.at)}), h("td", null, h("span", {class: "pill " + (e.event === "Stock" ? "None" : STATUS_OF[e.event] || "None"), text: evLabel(e.event)})),
         h("td", null, nm, by(e.by)), h("td", {text: e.note || ""})));
     });
     p.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Date"}), h("th", {text: "Report"}), h("th", {text: "Item"}), h("th", {text: "Note"}))), tb)));
@@ -775,10 +797,10 @@ function render(){
 /* ---------- export ---------- */
 function csvCell(v){ v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 function exportCsv(){
-  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes","Type","Show",
+  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes","Type","Show","Current level",
                "Vendor","Catalog #","Grade","Pack size","Pack unit","Price","Preferred","Price note","Alternative catalog #","Price checked on","Comment"]];
   sorted(S.items).forEach(function(it){
-    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (it.statusAt || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes, kindOf(it), showOf(it)];
+    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (it.statusAt || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes, kindOf(it), showOf(it), hasLevel(it) ? it.level : ""];
     var opts = (it.opts || []).length ? it.opts : [null];
     opts.forEach(function(o){ rows.push(base.concat(o ? [o.vendor, o.catalog, o.grade, o.pack, o.unit, o.price, o.pref ? "TRUE" : "FALSE", o.pnote, o.alt, o.checked, o.comment] : ["","","","","","","","","","",""])); });
   });
