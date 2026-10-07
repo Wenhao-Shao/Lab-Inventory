@@ -115,7 +115,7 @@ h2{font-family:var(--display);font-size:17px;margin:0}
 .f.check{flex-direction:row;align-items:center;gap:8px}
 .f.check label{font-size:14px;color:var(--ink)}
 .err{color:var(--out);font-size:13px}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;z-index:30;max-width:calc(100% - 32px)}
+.toast{cursor:pointer;position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;z-index:30;max-width:calc(100% - 32px)}
 .bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:flex-end}
 .who{font-size:13px;color:var(--muted)}
 .demo{background:var(--low-bg);color:var(--low);border-radius:8px;padding:9px 12px;font-size:13.5px}
@@ -223,6 +223,7 @@ function chem(name){
 var S = { items: [], events: [], loaded: false, name: "", pass: "", role: null, canWrite: false,
           tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "main", moreOpts: {}, open: null, dead: null, locked: false, lastLoad: 0 };
 var KEY = "shaoLabInventory";
+var DEMO = false;
 var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Research chemicals",
   "Gloves & PPE","Pipettes & tips","Filtration, syringes & needles","Vials, tubes & plates","Bottles & containers","Glassware","Stoppers, septa & joints","Stir bars",
   "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
@@ -238,7 +239,7 @@ var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Received:"OK", OK:"OK
 
 function remember(){ try { localStorage.setItem(KEY, JSON.stringify({name:S.name, pass:S.pass})); } catch(e){} }
 function recall(){ try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch(e){ return null; } }
-function forget(){ try { localStorage.removeItem(KEY); } catch(e){} }
+function forget(){ try { localStorage.removeItem(KEY); localStorage.removeItem(KEY + "Data"); } catch(e){} }
 
 function money(n){ return typeof n === "number" ? "$" + n.toFixed(2) : ""; }
 function pack(o){ return o && o.pack != null && o.pack !== "" ? o.pack + " " + (o.unit || "") : ""; }
@@ -280,21 +281,58 @@ function sorted(list){
 }
 
 var toastT;
-function toast(msg, stay){ var t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); if (!stay) toastT = setTimeout(function(){ t.hidden = true; }, 3500); }
+/* stay: true keeps the message until the next one; a number is how many milliseconds to show it. A click dismisses it. */
+function toast(msg, stay){ var t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); if (stay !== true) toastT = setTimeout(function(){ t.hidden = true; }, typeof stay === "number" ? stay : 3500); }
 function sync(text){ $("sync").textContent = text; }
 
 /* ---------- talking to the Google Sheet ---------- */
-var DEMO = false;
-function api(action, payload){
-  var body = Object.assign({action: action, pass: S.pass, user: S.name}, payload || {});
+/* The Sheet script answers a save with only what changed, and a load with two compact tables. Both keep the page fast. */
+function expand(d){
+  var byId = {}, items = d.items.map(function(r){ var o = {opts: []}; d.ikeys.forEach(function(k, i){ o[k] = r[i]; }); byId[o.id] = o; return o; });
+  (d.opts || []).forEach(function(r){
+    var o = {}; d.okeys.forEach(function(k, i){ if (k !== "item") o[k] = r[i]; });
+    var owner = byId[r[d.okeys.indexOf("item")]]; if (owner) owner.opts.push(o);
+  });
+  return items;
+}
+function itemById(id){ for (var i = 0; i < S.items.length; i++) if (S.items[i].id === id) return S.items[i]; return null; }
+function applyPatch(p, ctx){
+  var it;
+  if (p.item && (it = itemById(p.item.id))){ Object.assign(it, p.item); delete it._hay; }
+  if (p.event){ if (ctx && ctx.localEvent) Object.assign(ctx.localEvent, p.event); else S.events.unshift(p.event); }
+  if (p.add) S.items.push(p.add);
+  if (p.opt && (it = itemById(p.itemId))){
+    if (p.opt.pref) it.opts.forEach(function(o){ o.pref = false; });
+    var at = -1; it.opts.forEach(function(o, i){ if (o.oid === p.opt.oid) at = i; });
+    if (at >= 0) it.opts[at] = p.opt; else it.opts.push(p.opt);
+    delete it._hay;
+  }
+  if (p.delOpt) S.items.forEach(function(i){ var n = i.opts.length; i.opts = i.opts.filter(function(o){ return o.oid !== p.delOpt; }); if (i.opts.length !== n) delete i._hay; });
+}
+/* A copy of the last load is kept in this browser so the list opens at once; it is refreshed from the Sheet right after. */
+var DKEY = KEY + "Data", cacheT;
+function saveCache(){
+  if (DEMO) return;
+  clearTimeout(cacheT);
+  cacheT = setTimeout(function(){
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, at: Date.now(), items: S.items, events: S.events}, function(k, v){ return k === "_hay" ? undefined : v; })); } catch(e){}
+  }, 500);
+}
+function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
+function dropCache(){ clearTimeout(cacheT); try { localStorage.removeItem(DKEY); } catch(e){} }
+
+function api(action, payload, ctx){
+  var body = Object.assign({action: action, pass: S.pass, user: S.name, v: 2}, payload || {});
   var call = DEMO ? Promise.resolve().then(function(){ return demoApi(body); })
     : fetch(API_URL, {method: "POST", redirect: "follow", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(body)})
         .then(function(r){ return r.json(); }, function(){ throw {error: "network"}; })
         .catch(function(e){ throw (e && e.error) ? e : {error: "network"}; });
   return call.then(function(d){
       if (!d || !d.ok) throw (d || {error: "network"});
-      S.items = d.items || []; S.events = d.events || []; S.role = d.role; S.canWrite = d.role === "edit";
-      S.loaded = true; S.dead = null; S.lastLoad = Date.now();
+      S.role = d.role; S.canWrite = d.role === "edit";
+      if (d.patch) applyPatch(d.patch, ctx);
+      else { S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; S.lastLoad = Date.now(); }
+      S.loaded = true; S.dead = null; saveCache();
       sync("Updated " + new Date().toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
       render();
       return d;
@@ -351,7 +389,7 @@ function demoApi(b){
 
 function problem(e){
   var c = e && e.error;
-  if (c === "bad_passcode"){ forget(); S.pass = ""; showLogin("That passcode is not right, or it was changed. Enter the current one."); return "Sign in again."; }
+  if (c === "bad_passcode"){ forget(); dropCache(); S.pass = ""; S.items = []; S.events = []; S.loaded = false; S.role = null; S.canWrite = false; render(); showLogin("That passcode is not right, or it was changed. Enter the current one."); return "Sign in again."; }
   if (c === "read_only") return "Not saved. You are signed in with the read-only passcode.";
   if (c === "busy") return "Not saved. Someone else was saving at the same moment; try again.";
   if (c === "not_found"){ load(true); return "Not saved. That row is no longer in the Sheet; the list was refreshed."; }
@@ -367,13 +405,33 @@ function load(quiet){
     if (e.error !== "bad_passcode"){ if (!S.loaded){ S.dead = msg; render(); } else toast(msg); sync("Not updated"); }
   });
 }
-var busy = false;
-function save(action, payload, done){
-  if (busy) return Promise.reject({error: "busy"});
-  busy = true; toast("Saving…", true); sync("Saving…");
-  return api(action, payload).then(function(d){ busy = false; toast(done); return d; }, function(e){ busy = false; $("toast").hidden = true; sync("Not saved"); throw e; });
+/* Saves go to the Sheet one after another, in the order they were made. */
+var chain = Promise.resolve(), pending = 0;
+function enqueue(fn){
+  pending++;
+  var run = chain.then(fn, fn);
+  chain = run.then(function(){}, function(){});
+  return run.then(function(v){ pending--; return v; }, function(e){ pending--; throw e; });
 }
-function quick(action, payload, done){ return function(){ save(action, payload, done).catch(function(e){ toast(problem(e)); }); }; }
+function save(action, payload, done){
+  toast("Saving…", true); sync("Saving…");
+  return enqueue(function(){ return api(action, payload); }).then(function(d){ toast(done); return d; }, function(e){ $("toast").hidden = true; sync("Not saved"); throw e; });
+}
+function stamp(){ var d = new Date(), z = function(n){ return ("0" + n).slice(-2); }; return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + " " + z(d.getHours()) + ":" + z(d.getMinutes()); }
+/* A report shows on the page at once and is saved in the background. If the save fails, the page goes back to what it showed before. */
+function report(it, ev, note){
+  note = note || "";
+  var before = {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote}, now = stamp();
+  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: note};
+  Object.assign(it, {status: STATUS_OF[ev], statusAt: now, statusBy: S.name, statusNote: note}); S.events.unshift(le);
+  render(); toast(it.name + " marked " + (ev === "OK" ? "checked OK" : ev.toLowerCase())); sync("Saving…");
+  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, note: note}, {localEvent: le}); }).catch(function(e){
+    var cur = itemById(it.id); if (cur) Object.assign(cur, before);
+    var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
+    sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
+  });
+}
+function quickReport(it, ev){ return function(){ report(it, ev, ""); }; }
 
 /* ---------- sign-in ---------- */
 function showLogin(message){
@@ -396,7 +454,7 @@ function showLogin(message){
      err, h("div", {class: "acts"}, go));
   S.locked = true; s.textContent = ""; s.appendChild(form); s.hidden = false; (S.name ? pass : name).focus();
 }
-function signOut(){ forget(); S.pass = ""; S.items = []; S.events = []; S.loaded = false; S.role = null; S.canWrite = false; render(); showLogin(""); }
+function signOut(){ forget(); dropCache(); S.pass = ""; S.items = []; S.events = []; S.loaded = false; S.role = null; S.canWrite = false; render(); showLogin(""); }
 
 /* ---------- forms ---------- */
 function closeSheet(){ if (S.locked) return; var s = $("sheet"); s.hidden = true; s.textContent = ""; }
@@ -520,7 +578,7 @@ function reportWithNote(it){
   openSheet("Report on " + it.name, [
     {k: "event", label: "What happened", type: "select", options: ["Low","Out","Ordered","Received","OK"]},
     {k: "note", label: "Note (how much is left, order number, who to ask)", type: "area", wide: true}
-  ], {event: "Low"}, function(v){ return save("report", {itemId: it.id, event: v.event, note: v.note}, it.name + " marked " + v.event.toLowerCase()); });
+  ], {event: "Low"}, function(v){ report(it, v.event, v.note); });
 }
 
 /* ---------- rendering ---------- */
@@ -539,7 +597,7 @@ function detail(it){
     var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
     ["Low","Out","Ordered","Received","OK"].forEach(function(ev){
       acts.appendChild(h("button", {class: "btn small", type: "button", text: ev === "OK" ? "Checked, OK" : ev,
-        onclick: quick("report", {itemId: it.id, event: ev, note: ""}, it.name + " marked " + (ev === "OK" ? "checked OK" : ev.toLowerCase()))}));
+        onclick: quickReport(it, ev)}));
     });
     acts.appendChild(h("button", {class: "btn small", type: "button", text: "With a note…", onclick: function(){ reportWithNote(it); }}));
     d.appendChild(acts);
@@ -667,7 +725,7 @@ function renderReorder(){
         h("td", null, nm, h("div", {class: "note", text: (day(it.statusAt) || "date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "")})),
         h("td", {text: p ? p.vendor : "none recorded"}), h("td", {class: "mono", text: p ? p.catalog : ""}),
         h("td", {class: "num", text: pack(p)}), h("td", {class: "r num", text: p ? money(p.price) : ""}),
-        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: quick("report", {itemId: it.id, event: ev, note: ""}, it.name + " marked " + ev.toLowerCase())}) : null)));
+        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: quickReport(it, ev)}) : null)));
     });
     return {el: h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Status"}), h("th", {text: "Item"}), h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th"))), tb)), total: total};
   }
@@ -730,16 +788,18 @@ function exportCsv(){
 }
 
 /* ---------- wiring ---------- */
-$("q").addEventListener("input", function(){ S.q = this.value; if (S.tab !== "items") S.tab = "items"; S.open = null; render(); });
+var typeT;
+$("q").addEventListener("input", function(){ S.q = this.value; if (S.tab !== "items") S.tab = "items"; S.open = null; clearTimeout(typeT); typeT = setTimeout(render, 90); });
 document.querySelectorAll(".tab").forEach(function(t){ t.addEventListener("click", function(){ S.tab = t.dataset.tab; render(); }); });
 $("addBtn").addEventListener("click", addItem);
 $("exportBtn").addEventListener("click", exportCsv);
 $("refreshBtn").addEventListener("click", function(){ load(); });
 $("outBtn").addEventListener("click", signOut);
 $("sheet").addEventListener("click", function(ev){ if (ev.target === this) closeSheet(); });
+$("toast").addEventListener("click", function(){ this.hidden = true; });
 document.addEventListener("keydown", function(ev){ if (ev.key === "Escape" && !$("sheet").hidden) closeSheet(); });
 document.addEventListener("visibilitychange", function(){
-  if (!document.hidden && S.role && $("sheet").hidden && !busy && Date.now() - S.lastLoad > 120000) load(true);
+  if (!document.hidden && S.role && $("sheet").hidden && !pending && Date.now() - S.lastLoad > 120000) load(true);
 });
 var hash = (location.hash || "").replace("#", ""); if (hash === "reorder" || hash === "activity") S.tab = hash;
 render();
@@ -750,7 +810,14 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
 } else {
   if (window.__TEST_API__) API_URL = window.__TEST_API__;
   var saved = recall();
-  if (saved && saved.name && saved.pass){ S.name = saved.name; S.pass = saved.pass; render(); load(); }
+  if (saved && saved.name && saved.pass){
+    S.name = saved.name; S.pass = saved.pass;
+    var kept = readCache();
+    if (kept){
+      S.items = kept.items; S.events = kept.events || []; S.role = kept.role; S.canWrite = kept.role === "edit"; S.loaded = true;
+      render(); sync("Saved copy; updating…"); load(true);
+    } else { render(); load(); }
+  }
   else showLogin("");
 }
 })();

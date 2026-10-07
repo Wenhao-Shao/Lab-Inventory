@@ -55,6 +55,7 @@ function onOpen() {
     .addItem('2. Set passcodes', 'setPasscodes')
     .addItem('Check status', 'status');
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
+  if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
   menu.addToUi();
 }
 
@@ -140,7 +141,8 @@ function handle_(body) {
   var ss = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
   if (!ss || !ss.getSheetByName(TABS.items)) throw fail_('not_set_up', 'Run Lab inventory > Set up tabs in the spreadsheet.');
 
-  var action = String(body.action || 'load'), extra = {};
+  // A page that sends v >= 2 gets a short answer: only what changed after a save, and a compact table on load.
+  var action = String(body.action || 'load'), extra = {}, lean = Number(body.v) >= 2, patch = null;
   if (action !== 'load') {
     if (role !== 'edit') throw fail_('read_only');
     var user = text_(body.user, 40);
@@ -148,15 +150,17 @@ function handle_(body) {
     var lock = LockService.getScriptLock();
     try { lock.waitLock(20000); } catch (err) { throw fail_('busy'); }
     try {
-      if (action === 'report') report_(ss, body, user);
-      else if (action === 'addItem') extra.newId = addItem_(ss, body);
-      else if (action === 'updateItem') updateItem_(ss, body);
-      else if (action === 'saveOption') saveOption_(ss, body);
-      else if (action === 'deleteOption') deleteOption_(ss, body);
+      if (action === 'report') patch = report_(ss, body, user);
+      else if (action === 'addItem') { patch = addItem_(ss, body); extra.newId = patch.add.id; }
+      else if (action === 'updateItem') patch = updateItem_(ss, body);
+      else if (action === 'saveOption') patch = saveOption_(ss, body);
+      else if (action === 'deleteOption') patch = deleteOption_(ss, body);
       else throw fail_('invalid', 'Unknown action.');
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
+    if (lean) return Object.assign({ ok: true, role: role, patch: patch }, extra);
   }
+  if (lean) return Object.assign({ ok: true, role: role }, compact_(ss));
   var data = readAll_(ss);
   return Object.assign({ ok: true, role: role, items: data.items, events: data.events }, extra);
 }
@@ -172,6 +176,8 @@ function report_(ss, body, user) {
   append_(ss.getSheetByName(TABS.events), [when, String(body.itemId), name, ev, user, note], EVENT_TYPES);
   var c = ITEM_KEYS.indexOf('status') + 1;
   write_(items, row, [[STATUS_OF[ev], when, user, note]], ['t', 't', 't', 't'], c);
+  return { item: { id: String(body.itemId), status: STATUS_OF[ev], statusAt: when, statusBy: user, statusNote: note },
+           event: { at: when, item: String(body.itemId), name: name, event: ev, by: user, note: note } };
 }
 
 function addItem_(ss, body) {
@@ -183,6 +189,7 @@ function addItem_(ss, body) {
   kind_(it);
   cols_(items, ITEM_COLS);
   append_(items, itemRow_(it), ITEM_TYPES);
+  var added = Object.assign({}, it, { opts: [] });
   if (body.opt && (body.opt.vendor || body.opt.catalog)) {
     var o = cleanOpt_(body.opt), opts = ss.getSheetByName(TABS.opts);
     o.oid = nextOid_(opts); o.item = it.id; o.pref = true; o.alt = '';
@@ -190,8 +197,9 @@ function addItem_(ss, body) {
     o.checked = o.price == null ? '' : today_(ss);
     cols_(opts, OPT_COLS);
     append_(opts, optRow_(o), OPT_TYPES);
+    added.opts.push(sent_(o));
   }
-  return it.id;
+  return { add: added };
 }
 
 function updateItem_(ss, body) {
@@ -205,6 +213,7 @@ function updateItem_(ss, body) {
   ITEM_EDITABLE.forEach(function (k) { cur[k] = next[k]; });
   kind_(cur);
   write_(items, row, [itemRow_(cur)], ITEM_TYPES);
+  return { item: cur };
 }
 
 function saveOption_(ss, body) {
@@ -235,12 +244,14 @@ function saveOption_(ss, body) {
     }
   }
   if (row) write_(opts, row, [optRow_(o)], OPT_TYPES); else append_(opts, optRow_(o), OPT_TYPES);
+  return { itemId: o.item, opt: sent_(o) };
 }
 
 function deleteOption_(ss, body) {
   var opts = ss.getSheetByName(TABS.opts), row = findRow_(opts, 1, body.oid);
   if (!row) throw fail_('not_found');
   opts.deleteRow(row);
+  return { delOpt: String(body.oid) };
 }
 
 /* --------------------------------------------------------------- helpers */
@@ -256,6 +267,10 @@ function readAll_(ss) {
     var owner = byId[o.item]; if (!owner) return;
     delete o.item; owner.opts.push(o);
   });
+  return { items: items, events: events_(ss) };
+}
+
+function events_(ss) {
   var events = [], es = ss.getSheetByName(TABS.events);
   if (es && es.getLastRow() >= 2) {
     var last = es.getLastRow(), first = Math.max(2, last - EVENTS_SENT + 1);
@@ -265,7 +280,25 @@ function readAll_(ss) {
     });
     events.reverse();
   }
-  return { items: items, events: events };
+  return events;
+}
+
+/** The whole inventory as two tables without repeated field names: about half the size of the full form. */
+function compact_(ss) {
+  function table(sheet, keys, types) {
+    var out = [];
+    if (sheet) rows_(sheet, keys, types).forEach(function (o) { if (o[keys[0]]) out.push(keys.map(function (k) { return o[k]; })); });
+    return out;
+  }
+  return { compact: true, ikeys: ITEM_KEYS, okeys: OPT_KEYS, items: table(ss.getSheetByName(TABS.items), ITEM_KEYS, ITEM_TYPES),
+           opts: table(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES), events: events_(ss) };
+}
+
+/** A vendor option as the page expects it: every field except the item it belongs to. */
+function sent_(o) {
+  var out = {};
+  OPT_KEYS.forEach(function (k) { if (k !== 'item') out[k] = o[k] === undefined ? '' : o[k]; });
+  return out;
 }
 
 function rows_(sheet, keys, types) {
