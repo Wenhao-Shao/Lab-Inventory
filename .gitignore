@@ -1,6 +1,7 @@
 Seed.gs
 Merge.gs
 Fix.gs
+Changes.gs
 *.csv
 *.xlsx
 *.json

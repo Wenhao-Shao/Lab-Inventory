@@ -19,7 +19,7 @@
  * The passcodes live in this script's properties, never in the web page.
  */
 
-var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events' };
+var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events', reminders: 'Reminders' };
 
 var ITEM_COLS = ['Item ID', 'Name', 'Also called', 'CAS', 'Category', 'Location', 'Min level', 'Unit', 'Stocked',
   'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show', 'Current level'];
@@ -37,6 +37,11 @@ var OPT_KEPT = ['link', 'hidden', 'bought', 'last'];   // set by the purchase re
 
 var EVENT_COLS = ['Date', 'Item ID', 'Item', 'Event', 'Reported by', 'Note'];
 var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
+
+// Reminders: a shared to-do list for the inventory (links to find, prices to compare). The tab is made on first use.
+var REM_COLS = ['ID', 'Reminder', 'Added', 'Added by', 'Done', 'Done date', 'Done by'];
+var REM_KEYS = ['rid', 'text', 'at', 'by', 'done', 'doneAt', 'doneBy'];
+var REM_TYPES = ['t', 't', 't', 't', 'b', 't', 't'];
 
 // Reports the page can send. "Stock" is a count of what is on the shelf; its status follows from the count and the min level.
 // "Received" and "OK" are kept so that events written before 8 Oct 2026, and an older copy of the page, still work.
@@ -61,6 +66,7 @@ function onOpen() {
     .addItem('Check status', 'status');
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
+  if (typeof applyChanges1008 === 'function') menu.addItem('5. Apply changes (8 Oct)', 'applyChanges1008');
   menu.addToUi();
 }
 
@@ -160,6 +166,9 @@ function handle_(body) {
       else if (action === 'updateItem') patch = updateItem_(ss, body);
       else if (action === 'saveOption') patch = saveOption_(ss, body);
       else if (action === 'deleteOption') patch = deleteOption_(ss, body);
+      else if (action === 'addReminder') patch = addReminder_(ss, body, user);
+      else if (action === 'checkReminder') patch = checkReminder_(ss, body, user);
+      else if (action === 'deleteReminder') patch = deleteReminder_(ss, body);
       else throw fail_('invalid', 'Unknown action.');
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
@@ -167,7 +176,7 @@ function handle_(body) {
   }
   if (lean) return Object.assign({ ok: true, role: role }, compact_(ss));
   var data = readAll_(ss);
-  return Object.assign({ ok: true, role: role, items: data.items, events: data.events }, extra);
+  return Object.assign({ ok: true, role: role, items: data.items, events: data.events, reminders: reminders_(ss) }, extra);
 }
 
 /* --------------------------------------------------------------- actions */
@@ -275,6 +284,35 @@ function deleteOption_(ss, body) {
   return { delOpt: String(body.oid) };
 }
 
+/* --------------------------------------------------------------- reminders */
+
+function reminders_(ss) {
+  var sh = ss.getSheetByName(TABS.reminders);
+  return sh ? rows_(sh, REM_KEYS, REM_TYPES).filter(function (r) { return r.rid; }) : [];
+}
+function addReminder_(ss, body, user) {
+  var text = text_(body.text, 300);
+  if (!text) throw fail_('invalid', 'Write the reminder first.');
+  var sh = tab_(ss, TABS.reminders, REM_COLS, REM_TYPES);
+  var r = { rid: 'R-' + ('000' + (maxNumber_(sh, 1, 'R-') + 1)).slice(-4), text: text, at: now_(ss), by: user, done: false, doneAt: '', doneBy: '' };
+  append_(sh, toRow_(r, REM_KEYS, REM_TYPES), REM_TYPES);
+  return { reminder: r };
+}
+function checkReminder_(ss, body, user) {
+  var sh = ss.getSheetByName(TABS.reminders), row = sh ? findRow_(sh, 1, body.rid) : 0;
+  if (!row) throw fail_('not_found');
+  var r = fromRow_(sh.getRange(row, 1, 1, REM_KEYS.length).getValues()[0], REM_KEYS, REM_TYPES);
+  r.done = !!body.done; r.doneAt = r.done ? now_(ss) : ''; r.doneBy = r.done ? user : '';
+  write_(sh, row, [[r.done, r.doneAt, r.doneBy]], ['b', 't', 't'], REM_KEYS.indexOf('done') + 1);
+  return { reminder: r };
+}
+function deleteReminder_(ss, body) {
+  var sh = ss.getSheetByName(TABS.reminders), row = sh ? findRow_(sh, 1, body.rid) : 0;
+  if (!row) throw fail_('not_found');
+  sh.deleteRow(row);
+  return { delReminder: String(body.rid) };
+}
+
 /* --------------------------------------------------------------- helpers */
 
 function readAll_(ss) {
@@ -312,7 +350,7 @@ function compact_(ss) {
     return out;
   }
   return { compact: true, ikeys: ITEM_KEYS, okeys: OPT_KEYS, items: table(ss.getSheetByName(TABS.items), ITEM_KEYS, ITEM_TYPES),
-           opts: table(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES), events: events_(ss) };
+           opts: table(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES), events: events_(ss), reminders: reminders_(ss) };
 }
 
 /** A vendor option as the page expects it: every field except the item it belongs to. */

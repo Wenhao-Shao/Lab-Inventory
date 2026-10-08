@@ -74,6 +74,15 @@ button{cursor:pointer}
 .pill.Low{color:var(--low);background:var(--low-bg)} .pill.Out{color:var(--out);background:var(--out-bg)}
 .pill.Ordered{color:var(--ord);background:var(--ord-bg)} .pill.OK{color:var(--ok);background:var(--ok-bg)}
 .pill.None{color:var(--none);background:var(--none-bg)}
+.rem{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)}
+.rem:last-child{border-bottom:0}
+.rem input[type=checkbox]{width:19px;height:19px;margin:2px 0 0;flex:none;accent-color:var(--accent)}
+.rem .t{flex:1;min-width:0;overflow-wrap:anywhere}
+.rem.done .t{text-decoration:line-through;color:var(--muted)}
+.addrem{display:flex;gap:8px;flex-wrap:wrap}
+.addrem input{flex:1 1 220px;min-width:0;padding:9px 10px;border:1.5px solid var(--line);border-radius:7px;background:var(--bg);font-size:16px}
+.star{background:none;border:0;padding:0 5px 0 0;font-size:16px;line-height:1;color:var(--accent);cursor:pointer}
+.star:disabled{cursor:default}
 .pill.NoNeed{color:var(--none);background:var(--none-bg)}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
@@ -149,6 +158,7 @@ h2{font-family:var(--display);font-size:17px;margin:0}
     <button class="tab" role="tab" id="tab-items" data-tab="items" type="button">Inventory<span class="count" id="c-items">0</span></button>
     <button class="tab" role="tab" id="tab-reorder" data-tab="reorder" type="button">Reorder<span class="count" id="c-reorder">0</span></button>
     <button class="tab" role="tab" id="tab-activity" data-tab="activity" type="button">Activity</button>
+    <button class="tab" role="tab" id="tab-reminders" data-tab="reminders" type="button">Reminders<span class="count" id="c-reminders">0</span></button>
   </div>
 
   <section id="v-items">
@@ -157,6 +167,7 @@ h2{font-family:var(--display);font-size:17px;margin:0}
   </section>
   <section id="v-reorder" hidden></section>
   <section id="v-activity" hidden></section>
+  <section id="v-reminders" hidden></section>
 </div>
 <div class="sheet" id="sheet" hidden></div>
 <div class="toast" id="toast" hidden></div>
@@ -221,7 +232,7 @@ function chem(name){
 }
 
 /* ---------- state ---------- */
-var S = { items: [], events: [], loaded: false, name: "", pass: "", role: null, canWrite: false,
+var S = { items: [], events: [], reminders: [], showDone: false, loaded: false, name: "", pass: "", role: null, canWrite: false,
           tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "main", moreOpts: {}, open: null, dead: null, locked: false, lastLoad: 0 };
 var KEY = "shaoLabInventory";
 var DEMO = false;
@@ -321,6 +332,11 @@ function applyPatch(p, ctx){
     if (at >= 0) it.opts[at] = p.opt; else it.opts.push(p.opt);
     delete it._hay;
   }
+  if (p.reminder){
+    var ri = -1; S.reminders.forEach(function(r, i){ if (r.rid === p.reminder.rid || (ctx && ctx.localRem && r === ctx.localRem)) ri = i; });
+    if (ri >= 0) S.reminders[ri] = p.reminder; else S.reminders.push(p.reminder);
+  }
+  if (p.delReminder) S.reminders = S.reminders.filter(function(r){ return r.rid !== p.delReminder; });
   if (p.delOpt) S.items.forEach(function(i){ var n = i.opts.length; i.opts = i.opts.filter(function(o){ return o.oid !== p.delOpt; }); if (i.opts.length !== n) delete i._hay; });
 }
 /* A copy of the last load is kept in this browser so the list opens at once; it is refreshed from the Sheet right after. */
@@ -329,7 +345,7 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, at: Date.now(), items: S.items, events: S.events}, function(k, v){ return k === "_hay" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders}, function(k, v){ return k === "_hay" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
@@ -345,7 +361,7 @@ function api(action, payload, ctx){
       if (!d || !d.ok) throw (d || {error: "network"});
       S.role = d.role; S.canWrite = d.role === "edit";
       if (d.patch) applyPatch(d.patch, ctx);
-      else { S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; S.lastLoad = Date.now(); }
+      else { S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now(); }
       S.loaded = true; S.dead = null; saveCache();
       sync("Updated " + new Date().toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
       render();
@@ -447,6 +463,68 @@ function report(it, ev, d){
     sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
   });
 }
+/* One click on the star: this option becomes the preferred one, and the others lose their star. */
+function makePreferred(it, o){
+  var before = it.opts.map(function(x){ return x.pref; });
+  it.opts.forEach(function(x){ x.pref = x === o; }); render(); toast((o.vendor || "This option") + " is now the preferred vendor for " + it.name); sync("Saving…");
+  var opt = {vendor: o.vendor, catalog: o.catalog, grade: o.grade, pack: o.pack, unit: o.unit, price: o.price, pref: true, pnote: o.pnote, comment: o.comment};
+  return enqueue(function(){ return api("saveOption", {itemId: it.id, oid: o.oid, opt: opt}); }).catch(function(e){
+    var cur = itemById(it.id); if (cur && cur.opts.length === before.length) cur.opts.forEach(function(x, i){ x.pref = before[i]; });
+    sync("Not saved"); render(); toast("Not saved, so the star was put back. " + problem(e), 9000);
+  });
+}
+/* ---------- reminders: a shared checklist. Ticking one off shows at once and is saved in the background. ---------- */
+function addReminder(text){
+  var r = {rid: "", text: text, at: stamp(), by: S.name, done: false, doneAt: "", doneBy: ""};
+  S.reminders.push(r); render(); sync("Saving…");
+  return enqueue(function(){ return api("addReminder", {text: text}, {localRem: r}); }).catch(function(e){
+    S.reminders = S.reminders.filter(function(x){ return x !== r; }); sync("Not saved"); render(); toast("Not saved: " + problem(e), 9000);
+  });
+}
+function tickReminder(r, done){
+  var before = {done: r.done, doneAt: r.doneAt, doneBy: r.doneBy};
+  Object.assign(r, {done: done, doneAt: done ? stamp() : "", doneBy: done ? S.name : ""}); render(); sync("Saving…");
+  return enqueue(function(){ return api("checkReminder", {rid: r.rid, done: done}); }).catch(function(e){
+    Object.assign(r, before); sync("Not saved"); render(); toast("Not saved, so the tick was undone. " + problem(e), 9000);
+  });
+}
+function removeReminder(r){
+  var at = S.reminders.indexOf(r); if (at < 0) return;
+  S.reminders.splice(at, 1); render(); sync("Saving…");
+  return enqueue(function(){ return api("deleteReminder", {rid: r.rid}); }).catch(function(e){
+    S.reminders.splice(at, 0, r); sync("Not saved"); render(); toast("Not removed: " + problem(e), 9000);
+  });
+}
+function renderReminders(){
+  var v = $("v-reminders"); v.textContent = "";
+  var open = S.reminders.filter(function(r){ return !r.done; }), done = S.reminders.filter(function(r){ return r.done; });
+  $("c-reminders").textContent = String(open.length);
+  var p = h("div", {class: "panel"}, h("h2", {text: "Reminders"}));
+  if (S.canWrite){
+    var inp = h("input", {id: "remText", type: "text", maxlength: "300", autocomplete: "off", placeholder: "Add a reminder, e.g. find an Amazon link for 13 mm syringe filters", "aria-label": "New reminder"});
+    p.appendChild(h("form", {class: "addrem", novalidate: true, onsubmit: function(ev){
+      ev.preventDefault(); var t = inp.value.trim(); if (!t) return; inp.value = ""; addReminder(t).then(function(){ var x = $("remText"); if (x) x.focus(); });
+    }}, inp, h("button", {class: "btn primary", type: "submit", text: "Add"})));
+  }
+  function line(r){
+    var box = h("input", {type: "checkbox", "aria-label": (r.done ? "Mark not done: " : "Mark done: ") + r.text, disabled: !S.canWrite || !r.rid});
+    box.checked = !!r.done; box.addEventListener("change", function(){ tickReminder(r, box.checked); });
+    var meta = r.done ? "Done " + day(r.doneAt) + by(r.doneBy) : "Added " + day(r.at) + by(r.by) + (r.rid ? "" : " · saving…");
+    var del = S.canWrite && r.rid ? h("button", {class: "btn small", type: "button", text: "Remove"}) : null;
+    if (del) del.addEventListener("click", function(){ if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Confirm remove"; return; } removeReminder(r); });
+    return h("div", {class: "rem" + (r.done ? " done" : "")}, box, h("div", {class: "t"}, r.text, h("div", {class: "note", text: meta})), del);
+  }
+  var list = h("div");
+  if (!open.length) list.appendChild(h("p", {class: "note", text: S.loaded ? "Nothing open." : "Sign in to see the reminders."}));
+  open.forEach(function(r){ list.appendChild(line(r)); });
+  p.appendChild(list);
+  if (done.length){
+    p.appendChild(h("button", {class: "btn small", type: "button", text: (S.showDone ? "Hide" : "Show") + " done (" + done.length + ")", onclick: function(){ S.showDone = !S.showDone; render(); }}));
+    if (S.showDone){ var dl = h("div"); done.slice().reverse().forEach(function(r){ dl.appendChild(line(r)); }); p.appendChild(dl); }
+  }
+  v.appendChild(p);
+}
+
 /* The three reports that ask for a number. The unit is the item's own; it is asked for only when the item has none yet. */
 function unitField(it, k){ return {k: k, label: it.unit ? "Unit (set on the item)" : "Unit", list: UNITS.filter(Boolean), readonly: !!it.unit}; }
 function askLow(it){
@@ -484,7 +562,7 @@ function showLogin(message){
      err, h("div", {class: "acts"}, go));
   S.locked = true; s.textContent = ""; s.appendChild(form); s.hidden = false; (S.name ? pass : name).focus();
 }
-function signOut(){ forget(); dropCache(); S.pass = ""; S.items = []; S.events = []; S.loaded = false; S.role = null; S.canWrite = false; render(); showLogin(""); }
+function signOut(){ forget(); dropCache(); S.reminders = []; S.pass = ""; S.items = []; S.events = []; S.loaded = false; S.role = null; S.canWrite = false; render(); showLogin(""); }
 
 /* ---------- forms ---------- */
 function closeSheet(){ if (S.locked) return; var s = $("sheet"); s.hidden = true; s.textContent = ""; }
@@ -642,7 +720,10 @@ function detail(it){
       var bought = o.bought ? "bought " + o.bought + (o.bought === 1 ? " time" : " times") + (o.last ? ", last " + day(o.last) : "") : "";
       var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
       tb.appendChild(h("tr", {class: o.hidden ? "dim" : null},
-        h("td", {class: o.pref ? "pref" : ""}, (o.pref ? "★ " : "") + (o.vendor || "")),
+        h("td", {class: o.pref ? "pref" : ""}, S.canWrite
+          ? h("button", {class: "star", type: "button", disabled: o.pref, "aria-label": o.pref ? "Preferred vendor" : "Make " + (o.vendor || "this option") + " the preferred vendor",
+                         title: o.pref ? "Preferred vendor" : "Make this the preferred vendor", text: o.pref ? "★" : "☆", onclick: function(){ makePreferred(it, o); }})
+          : (o.pref ? "★ " : ""), o.vendor || ""),
         h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
         h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
         h("td", {class: "r num", text: money(o.price)}), h("td", {class: "r num", text: per}),
@@ -786,14 +867,14 @@ function renderActivity(){
   v.appendChild(p);
 }
 function render(){
-  ["items","reorder","activity"].forEach(function(t){
+  ["items","reorder","activity","reminders"].forEach(function(t){
     $("v-" + t).hidden = S.tab !== t; $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
   });
   $("addBtn").hidden = !(S.canWrite && S.loaded);
   $("exportBtn").hidden = !S.items.length;
   $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
   $("who").textContent = S.role ? S.name + (S.role === "edit" ? " · can edit" : " · read only") : "";
-  renderFilters(); renderItems(); renderReorder(); renderActivity();
+  renderFilters(); renderItems(); renderReorder(); renderActivity(); renderReminders();
 }
 
 /* ---------- export ---------- */
@@ -825,7 +906,7 @@ document.addEventListener("keydown", function(ev){ if (ev.key === "Escape" && !$
 document.addEventListener("visibilitychange", function(){
   if (!document.hidden && S.role && $("sheet").hidden && !pending && Date.now() - S.lastLoad > 120000) load(true);
 });
-var hash = (location.hash || "").replace("#", ""); if (hash === "reorder" || hash === "activity") S.tab = hash;
+var hash = (location.hash || "").replace("#", ""); if (hash === "reorder" || hash === "activity" || hash === "reminders") S.tab = hash;
 render();
 
 if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
@@ -838,7 +919,7 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
     S.name = saved.name; S.pass = saved.pass;
     var kept = readCache();
     if (kept){
-      S.items = kept.items; S.events = kept.events || []; S.role = kept.role; S.canWrite = kept.role === "edit"; S.loaded = true;
+      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.role = kept.role; S.canWrite = kept.role === "edit"; S.loaded = true;
       render(); sync("Saved copy; updating…"); load(true);
     } else { render(); load(); }
   }
