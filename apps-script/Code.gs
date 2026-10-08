@@ -40,7 +40,8 @@ var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
 
 // Reports the page can send. "Stock" is a count of what is on the shelf; its status follows from the count and the min level.
 // "Received" and "OK" are kept so that events written before 8 Oct 2026, and an older copy of the page, still work.
-var STATUS_OF = { Low: 'Low', Out: 'Out', Ordered: 'Ordered', Stock: 'OK', Received: 'OK', OK: 'OK' };
+// "No need" says the lab does not need to restock this for now; any later report replaces it.
+var STATUS_OF = { Low: 'Low', Out: 'Out', Ordered: 'Ordered', Stock: 'OK', 'No need': 'No need', Received: 'OK', OK: 'OK' };
 var PREFIX = { 'General organic solvents': 'SOL', 'Spec/HPLC solvents': 'SPC', 'Anhydrous solvents': 'ANH',
   'General solids': 'SLD', 'General acids & bases': 'ACB', 'NMR solvents': 'NMR', 'PVSK reagents': 'PVK',
   'Research chemicals': 'RCH', 'Gloves & PPE': 'PPE', 'Pipettes & tips': 'PIP', 'Filtration, syringes & needles': 'FIL',

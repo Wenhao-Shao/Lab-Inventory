@@ -74,6 +74,7 @@ button{cursor:pointer}
 .pill.Low{color:var(--low);background:var(--low-bg)} .pill.Out{color:var(--out);background:var(--out-bg)}
 .pill.Ordered{color:var(--ord);background:var(--ord-bg)} .pill.OK{color:var(--ok);background:var(--ok-bg)}
 .pill.None{color:var(--none);background:var(--none-bg)}
+.pill.NoNeed{color:var(--none);background:var(--none-bg)}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
 .morebar{border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--sunk);font-size:13px;color:var(--muted)}
@@ -235,7 +236,8 @@ function kindOf(it){ return KINDS.indexOf(it.type) >= 0 ? it.type : (it.stocked 
 function showOf(it){ return it.show === "Price list" || it.show === "More" ? it.show : "Main"; }
 function inScope(it){ var w = showOf(it); return w === "Main" || (w === "Price list" && S.scope !== "main") || (w === "More" && S.scope === "more"); }
 function noReport(it){ return statusOf(it) === "None" && kindOf(it) === "Stocked"; }
-var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Stock:"OK", Received:"OK", OK:"OK" };   /* Received and OK are reports made before 8 Oct 2026 */
+var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Stock:"OK", "No need":"No need", Received:"OK", OK:"OK" };   /* Received and OK are reports made before 8 Oct 2026 */
+function pillOf(s){ return s === "No need" ? "NoNeed" : s; }
 function evLabel(ev){ return ev === "Stock" ? "Stock count" : ev === "OK" ? "Checked" : ev; }
 function hasLevel(it){ return typeof it.level === "number"; }
 function amount(n, unit){ return n + (unit ? " " + unit : ""); }
@@ -610,7 +612,7 @@ function statusLine(it){
   var s = statusOf(it);
   if (s === "None") return kindOf(it) === "Stocked" ? "Nobody has reported on this yet." : KIND_NOTE[kindOf(it)] + ".";
   var when = day(it.statusAt);
-  return statusLabel(s) + (when ? ", reported " + when : ", check date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "");
+  return (s === "No need" ? "No need to restock for now" : statusLabel(s)) + (when ? ", reported " + when : ", check date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "");
 }
 function fact(label, value){ return value ? h("div", null, h("dt", {text: label}), h("dd", null, value)) : null; }
 function detail(it){
@@ -618,7 +620,7 @@ function detail(it){
   d.appendChild(h("div", {class: "note", text: statusLine(it)}));
   if (S.canWrite){
     var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
-    [["Low", function(){ askLow(it); }], ["Out", function(){ report(it, "Out"); }], ["Ordered", function(){ askOrdered(it); }], ["Report stock", function(){ askStock(it); }]].forEach(function(b){
+    [["Low", function(){ askLow(it); }], ["Out", function(){ report(it, "Out"); }], ["Ordered", function(){ askOrdered(it); }], ["Report stock", function(){ askStock(it); }], ["No need", function(){ report(it, "No need"); }]].forEach(function(b){
       acts.appendChild(h("button", {class: "btn small", type: "button", text: b[0], onclick: b[1]}));
     });
     d.appendChild(acts);
@@ -663,11 +665,11 @@ function detail(it){
   return d;
 }
 function renderFilters(){
-  var f = $("filters"), scoped = S.items.filter(inScope), counts = {all: scoped.length, Low: 0, Out: 0, Ordered: 0, None: 0};
+  var f = $("filters"), scoped = S.items.filter(inScope), counts = {all: scoped.length, Low: 0, Out: 0, Ordered: 0, "No need": 0, None: 0};
   scoped.forEach(function(it){ var s = statusOf(it); if (s === "None"){ if (noReport(it)) counts.None++; } else if (counts[s] != null) counts[s]++; });
   var nPrice = 0, nMore = 0; S.items.forEach(function(it){ var w = showOf(it); if (w === "Price list") nPrice++; else if (w === "More") nMore++; });
   f.textContent = "";
-  [["all","All"],["Low","Low"],["Out","Out"],["Ordered","Ordered"],["None","No report"]].forEach(function(p){
+  [["all","All"],["Low","Low"],["Out","Out"],["Ordered","Ordered"],["None","No report"],["No need","No need"]].forEach(function(p){
     f.appendChild(h("button", {class: "chip", type: "button", "aria-pressed": String(S.status === p[0]), onclick: function(){ S.status = p[0]; render(); }}, p[1] + " ", h("span", {class: "num", text: String(counts[p[0]])})));
   });
   var ks = h("select", {id: "kindSel", "aria-label": "Type", onchange: function(){ S.kind = ks.value; render(); }}, h("option", {value: "all", text: "All types"}));
@@ -717,7 +719,7 @@ function renderItems(){
     var s = statusOf(it), k = kindOf(it), p = bestOf(it), open = S.open === it.id, nOpt = (it.opts || []).length;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
-      h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : s), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
+      h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : pillOf(s)), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
         h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", hasLevel(it) ? " · " + amount(it.level, it.unit) + " on shelf" : "", it.lead ? " · long lead time" : "")),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
@@ -771,12 +773,12 @@ function renderReorder(){
 function renderActivity(){
   var v = $("v-activity"); v.textContent = "";
   var p = h("div", {class: "panel"}, h("h2", {text: "Recent reports"}));
-  if (!S.events.length) p.appendChild(h("p", {class: "note", text: "No reports yet. Open an item and tap Low, Out, Ordered or Report stock; each report is logged here with the date and who made it."}));
+  if (!S.events.length) p.appendChild(h("p", {class: "note", text: "No reports yet. Open an item and tap Low, Out, Ordered, Report stock or No need; each report is logged here with the date and who made it."}));
   else {
     var tb = h("tbody");
     S.events.forEach(function(e){
       var nm = h("span"); nm.appendChild(chem(e.name || e.item));
-      tb.appendChild(h("tr", null, h("td", {class: "num", text: day(e.at)}), h("td", null, h("span", {class: "pill " + (e.event === "Stock" ? "None" : STATUS_OF[e.event] || "None"), text: evLabel(e.event)})),
+      tb.appendChild(h("tr", null, h("td", {class: "num", text: day(e.at)}), h("td", null, h("span", {class: "pill " + (e.event === "Stock" ? "None" : pillOf(STATUS_OF[e.event] || "None")), text: evLabel(e.event)})),
         h("td", null, nm, by(e.by)), h("td", {text: e.note || ""})));
     });
     p.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Date"}), h("th", {text: "Report"}), h("th", {text: "Item"}), h("th", {text: "Note"}))), tb)));
