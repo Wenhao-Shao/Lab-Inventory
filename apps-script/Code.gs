@@ -65,7 +65,6 @@ function onOpen() {
   var menu = SpreadsheetApp.getUi().createMenu('Lab inventory')
     .addItem('1. Set up tabs', 'setup')
     .addItem('2. Set passcodes', 'setPasscodes')
-    .addItem('Set admin passcode', 'setAdminPasscode')
     .addItem('Check status', 'status');
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
@@ -116,7 +115,7 @@ function setPasscodes() {
   ui.alert('Saved. Anyone already signed in with an old passcode will be asked to sign in again.');
 }
 
-/** A third passcode for whoever runs the routine check: it can do everything the edit passcode can, sees Due to check and sets check intervals. */
+/** Optional third passcode. It works exactly like the edit passcode (Due to check comes with edit); kept so a passcode already set this way still signs in. Not on the menu. */
 function setAdminPasscode() {
   var ui = SpreadsheetApp.getUi(), props = PropertiesService.getScriptProperties();
   var a = ui.prompt('Admin passcode', 'For the PI and the Ordering Manager. It can edit, sees Due to check, and sets how often items are checked. At least 8 characters, different from the other two.', ui.ButtonSet.OK_CANCEL);
@@ -234,7 +233,6 @@ function report_(ss, body, user) {
 
 function addItem_(ss, body, role) {
   var it = cleanItem_(body.item || {});
-  if (role !== 'admin') it.check = null;   // only the admin passcode sets routine checks
   if (!it.name || !it.cat) throw fail_('invalid', 'Name and category are required.');
   var items = ss.getSheetByName(TABS.items), pre = PREFIX[it.cat] || 'GEN';
   it.id = pre + '-' + ('00' + (maxNumber_(items, 1, pre + '-') + 1)).slice(-3);
@@ -266,7 +264,6 @@ function updateItem_(ss, body, role) {
   var sent = body.fields || {};
   ITEM_EDITABLE.forEach(function (k) {
     if ((k === 'level' || k === 'check') && sent[k] === undefined) return;   // an older page does not send these
-    if (k === 'check' && role !== 'admin') return;                            // only the admin passcode sets routine checks
     cur[k] = next[k];
   });
   // An edit never touches the report fields (status, statusAt, statusBy, statusNote), so it does not count as a check.

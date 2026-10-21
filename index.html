@@ -353,8 +353,8 @@ function expand(d){
   });
   return items;
 }
-/* Three passcodes: read, edit, and admin. Admin can do everything edit can, and is the only one who sees Due to check and sets check intervals. */
-function setRole(r){ S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = r === "admin"; if (!S.isAdmin && S.status === "due") S.status = "all"; }
+/* Passcodes: read and edit (an "admin" passcode, if one was set in the Sheet, works the same as edit). Due to check and check intervals come with edit. */
+function setRole(r){ S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = S.canWrite; if (!S.isAdmin && S.status === "due") S.status = "all"; }
 function itemById(id){ for (var i = 0; i < S.items.length; i++) if (S.items[i].id === id) return S.items[i]; return null; }
 function applyPatch(p, ctx){
   var it;
@@ -1003,7 +1003,7 @@ function render(){
   $("addBtn").hidden = !(S.canWrite && S.loaded);
   $("exportBtn").hidden = !S.items.length;
   $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
-  $("who").textContent = S.role ? S.name + (S.role === "admin" ? " · admin" : S.role === "edit" ? " · can edit" : " · read only") : "";
+  $("who").textContent = S.role ? S.name + (S.canWrite ? " · can edit" : " · read only") : "";
   renderDue(); renderFilters(); renderItems(); renderReorder(); renderActivity(); renderReminders();
 }
 
