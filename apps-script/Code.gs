@@ -13,6 +13,8 @@
  * Asset (equipment), Price only (a price on file, nothing bought).
  * Item "Current level": the amount last reported on the shelf, in the item's unit. It is the last count
  * someone typed in, not a live number: nothing lowers it when people use the item.
+ * Item "Check every (days)": how often someone should look at the item and report on it. Empty means no routine
+ * check. The page lists items whose last report is older than this under "Due to check".
  * Item "Show": Main (listed by default), Price list (behind the price-list switch),
  * More (rows that were hidden in the overseas price list).
  *
@@ -22,11 +24,11 @@
 var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events', reminders: 'Reminders' };
 
 var ITEM_COLS = ['Item ID', 'Name', 'Also called', 'CAS', 'Category', 'Location', 'Min level', 'Unit', 'Stocked',
-  'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show', 'Current level'];
+  'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show', 'Current level', 'Check every (days)'];
 var ITEM_KEYS = ['id', 'name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'stocked',
-  'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote', 'type', 'show', 'level'];
-var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't', 't', 't', 'n'];
-var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 'lead', 'exp', 'spec', 'notes', 'level'];
+  'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote', 'type', 'show', 'level', 'check'];
+var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't', 't', 't', 'n', 'n'];
+var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 'lead', 'exp', 'spec', 'notes', 'level', 'check'];
 var ITEM_KINDS = ['Stocked', 'On hand', 'Asset', 'Price only'];
 
 var OPT_COLS = ['Option ID', 'Item ID', 'Vendor', 'Catalog #', 'Grade', 'Pack size', 'Pack unit', 'Price ($)',
@@ -67,6 +69,7 @@ function onOpen() {
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
   if (typeof applyChanges1008 === 'function') menu.addItem('5. Apply changes (8 Oct)', 'applyChanges1008');
+  if (typeof applyChanges1021 === 'function') menu.addItem('6. Apply changes (21 Oct)', 'applyChanges1021');
   menu.addToUi();
 }
 
@@ -166,6 +169,7 @@ function handle_(body) {
       else if (action === 'updateItem') patch = updateItem_(ss, body);
       else if (action === 'saveOption') patch = saveOption_(ss, body);
       else if (action === 'deleteOption') patch = deleteOption_(ss, body);
+      else if (action === 'deleteItem') patch = deleteItem_(ss, body, user);
       else if (action === 'addReminder') patch = addReminder_(ss, body, user);
       else if (action === 'checkReminder') patch = checkReminder_(ss, body, user);
       else if (action === 'deleteReminder') patch = deleteReminder_(ss, body);
@@ -201,6 +205,8 @@ function report_(ss, body, user) {
     var qty = num_(body.qty), qunit = text_(body.qunit, 16);
     if (qty != null) note = 'Ordered ' + amount(qty, qunit);
   }
+  var size = text_(body.size, 80);   // which size of an item that holds several, when the reporter picked one
+  if (size) note = size + (note ? ' · ' + note : '');
   append_(ss.getSheetByName(TABS.events), [when, String(body.itemId), cur.name, ev, user, note], EVENT_TYPES);
   write_(items, row, [[status, when, user, note]], ['t', 't', 't', 't'], ITEM_KEYS.indexOf('status') + 1);
   if (level !== cur.level) write_(items, row, [[level == null ? '' : level]], ['n'], ITEM_KEYS.indexOf('level') + 1);
@@ -240,7 +246,7 @@ function updateItem_(ss, body) {
   var next = cleanItem_(body.fields || {});
   if (!next.name || !next.cat) throw fail_('invalid', 'Name and category are required.');
   var sent = body.fields || {};
-  ITEM_EDITABLE.forEach(function (k) { if (k === 'level' && sent.level === undefined) return; cur[k] = next[k]; });   // an older page does not send the level
+  ITEM_EDITABLE.forEach(function (k) { if ((k === 'level' || k === 'check') && sent[k] === undefined) return; cur[k] = next[k]; });   // an older page does not send these
   kind_(cur);
   write_(items, row, [itemRow_(cur)], ITEM_TYPES);
   return { item: cur };
@@ -275,6 +281,30 @@ function saveOption_(ss, body) {
   }
   if (row) write_(opts, row, [optRow_(o)], OPT_TYPES); else append_(opts, optRow_(o), OPT_TYPES);
   return { itemId: o.item, opt: sent_(o) };
+}
+
+/** Moves an item and its vendor options to the "Deleted items" and "Deleted vendor options" tabs, so a wrong delete can be undone by moving the rows back. */
+function deleteItem_(ss, body, user) {
+  var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.id);
+  if (!row) throw fail_('not_found');
+  cols_(items, ITEM_COLS);
+  var when = now_(ss), id = String(body.id);
+  var it = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
+  var di = tab_(ss, 'Deleted items', ITEM_COLS.concat(['Deleted on', 'Deleted by']), ITEM_TYPES.concat(['t', 't']));
+  append_(di, itemRow_(it).concat([when, user]), ITEM_TYPES.concat(['t', 't']));
+  var opts = ss.getSheetByName(TABS.opts), last = opts.getLastRow();
+  if (last >= 2) {
+    cols_(opts, OPT_COLS);
+    var vals = opts.getRange(2, 1, last - 1, OPT_KEYS.length).getValues(), keep = [];
+    var dop = tab_(ss, 'Deleted vendor options', OPT_COLS.concat(['Deleted on', 'Deleted by']), OPT_TYPES.concat(['t', 't']));
+    for (var i = vals.length - 1; i >= 0; i--) {
+      if (String(vals[i][1]) !== id) continue;
+      append_(dop, optRow_(fromRow_(vals[i], OPT_KEYS, OPT_TYPES)).concat([when, user]), OPT_TYPES.concat(['t', 't']));
+      opts.deleteRow(i + 2);
+    }
+  }
+  items.deleteRow(row);
+  return { delItem: id };
 }
 
 function deleteOption_(ss, body) {
@@ -394,7 +424,7 @@ function cleanItem_(f) {
   if (ITEM_KINDS.indexOf(type) < 0) type = f.stocked === 'Yes' || f.stocked == null || f.stocked === '' ? 'Stocked' : 'On hand';
   return { name: text_(f.name, 160), aka: text_(f.aka, 200), cas: text_(f.cas, 40), cat: text_(f.cat, 60), loc: text_(f.loc, 120),
     min: num_(f.min), unit: text_(f.unit, 16), type: type, lead: !!f.lead, exp: !!f.exp,
-    spec: text_(f.spec, 120), notes: text_(f.notes, 1000), level: num_(f.level) };
+    spec: text_(f.spec, 120), notes: text_(f.notes, 1000), level: num_(f.level), check: num_(f.check) };
 }
 /** Keeps the older "Stocked" column and the "Show" column in step with Type. */
 function kind_(it) {

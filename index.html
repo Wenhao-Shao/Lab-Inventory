@@ -83,6 +83,12 @@ button{cursor:pointer}
 .addrem input{flex:1 1 220px;min-width:0;padding:9px 10px;border:1.5px solid var(--line);border-radius:7px;background:var(--bg);font-size:16px}
 .star{background:none;border:0;padding:0 5px 0 0;font-size:16px;line-height:1;color:var(--accent);cursor:pointer}
 .star:disabled{cursor:default}
+button.group{display:flex;justify-content:space-between;width:100%;text-align:left;border:0;border-top:1px solid var(--line);cursor:pointer;font-family:inherit}
+button.group:hover{color:var(--ink)}
+.group .gn{font-weight:500;letter-spacing:0;text-transform:none}
+.due{background:var(--surface);border:1.5px solid var(--low);border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;flex-direction:column;gap:8px}
+.due h2{display:flex;gap:8px;align-items:baseline}
+.due .names{display:flex;gap:6px;flex-wrap:wrap}
 .pill.NoNeed{color:var(--none);background:var(--none-bg)}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
@@ -162,6 +168,7 @@ h2{font-family:var(--display);font-size:17px;margin:0}
   </div>
 
   <section id="v-items">
+    <div id="due"></div>
     <div class="filters" id="filters"></div>
     <div id="list" style="margin-top:10px"></div>
   </section>
@@ -232,7 +239,7 @@ function chem(name){
 }
 
 /* ---------- state ---------- */
-var S = { items: [], events: [], reminders: [], showDone: false, loaded: false, name: "", pass: "", role: null, canWrite: false,
+var S = { items: [], events: [], reminders: [], showDone: false, collapsed: null, loaded: false, name: "", pass: "", role: null, canWrite: false,
           tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "main", moreOpts: {}, open: null, dead: null, locked: false, lastLoad: 0 };
 var KEY = "shaoLabInventory";
 var DEMO = false;
@@ -259,9 +266,13 @@ function outcome(it, ev, d){
   else if (ev === "Low"){ if (d.level != null){ o.level = d.level; o.note = amount(d.level, unit) + " left"; } }
   else if (ev === "Stock"){ o.level = d.level; o.note = amount(d.level, unit); o.status = d.level === 0 ? "Out" : (typeof it.min === "number" && d.level < it.min ? "Low" : "OK"); }
   else if (ev === "Ordered"){ if (d.qty != null) o.note = "Ordered " + amount(d.qty, d.qunit || ""); }
+  if (d.size) o.note = d.size + (o.note ? " · " + o.note : "");
   return o;
 }
 
+var CKEY = KEY + "Collapsed";
+function loadCollapsed(){ try { var c = JSON.parse(localStorage.getItem(CKEY) || "null"); if (c && typeof c === "object") return c; } catch(e){} return {"Research chemicals": true}; }
+function toggleCat(c){ S.collapsed[c] = !S.collapsed[c]; try { localStorage.setItem(CKEY, JSON.stringify(S.collapsed)); } catch(e){} render(); }
 function remember(){ try { localStorage.setItem(KEY, JSON.stringify({name:S.name, pass:S.pass})); } catch(e){} }
 function recall(){ try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch(e){ return null; } }
 function forget(){ try { localStorage.removeItem(KEY); localStorage.removeItem(KEY + "Data"); } catch(e){} }
@@ -294,15 +305,35 @@ function hay(it){
 function matches(it){
   if (S.cat !== "all" && it.cat !== S.cat) return false;
   if (S.kind !== "all" && kindOf(it) !== S.kind) return false;
-  if (S.status !== "all" && (S.status === "None" ? !noReport(it) : statusOf(it) !== S.status)) return false;
+  if (S.status === "due"){ if (!isDue(it)) return false; }
+  else if (S.status !== "all" && (S.status === "None" ? !noReport(it) : statusOf(it) !== S.status)) return false;
   var q = S.q.trim().toLowerCase(); if (!q) return true;
   var hs = it._hay || (it._hay = hay(it));
   return q.split(/\s+/).every(function(t){ var bare = t.replace(/[^a-z0-9]/g, ""); return hs.indexOf(t) >= 0 || (bare !== "" && hs.indexOf(bare) >= 0); });
 }
+/* Sizes compare by amount: "25 mL" comes before "1 L", "50 mm" before "10 cm". */
+var UNIT_TO = {"µl": 1, "ul": 1, "ml": 1000, "mi": 1000, "l": 1000000, "mm": 1, "cm": 10, "mg": 1, "g": 1000, "kg": 1000000};
+function sizeKey(s){
+  /* "10-15 mL" sorts by its first number: give that number the unit too before converting. */
+  return String(s || "").toLowerCase().replace(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(µl|ul|ml|mi|mg|kg|mm|cm|l|g)(?![a-z])/g, "$1 $3-$2 $3")
+    .replace(/(\d+(?:\.\d+)?)\s*(µl|ul|ml|mi|mg|kg|mm|cm|l|g)(?![a-z])/g, function(m, n, u){
+    return Math.round(parseFloat(n) * UNIT_TO[u] * 1000) + (u === "mm" || u === "cm" ? "mm" : /g$/.test(u) ? "g" : "ul");
+  });
+}
+function natCmp(a, b){ return sizeKey(a).localeCompare(sizeKey(b), undefined, {numeric: true, sensitivity: "base"}); }
+function daysSince(s){ if (!s) return Infinity; var d = new Date(String(s).replace(" ", "T")); return isNaN(d) ? Infinity : (Date.now() - d) / 864e5; }
+/* Due to check: the item has a check interval and its last report (any report counts) is older than that, or there is none. */
+function isDue(it){ return typeof it.check === "number" && it.check > 0 && daysSince(it.statusAt) >= it.check; }
+/* The sizes an item holds, from its vendor rows (rows behind "More" only when there is nothing else). */
+function sizesOf(it){
+  var all = it.opts || [], vis = all.filter(function(o){ return !o.hidden; }), seen = [];
+  (vis.length ? vis : all).forEach(function(o){ var g = String(o.grade || "").trim(); if (g && seen.indexOf(g) < 0) seen.push(g); });
+  return seen.sort(natCmp);
+}
+function sizeField(it){ var z = sizesOf(it); return z.length > 1 ? {k: "size", label: "Which size", type: "select", options: [""].concat(z), blank: "Not one size in particular", wide: true} : null; }
 function catRank(c){ var i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i; }
 function sorted(list){
-  var rank = {Main: 0, "Price list": 1, More: 2};
-  return list.slice().sort(function(a, b){ return catRank(a.cat) - catRank(b.cat) || String(a.cat).localeCompare(String(b.cat)) || rank[showOf(a)] - rank[showOf(b)] || a.id.localeCompare(b.id); });
+  return list.slice().sort(function(a, b){ return catRank(a.cat) - catRank(b.cat) || String(a.cat).localeCompare(String(b.cat)) || natCmp(a.name, b.name) || a.id.localeCompare(b.id); });
 }
 
 var toastT;
@@ -326,6 +357,7 @@ function applyPatch(p, ctx){
   if (p.item && (it = itemById(p.item.id))){ Object.assign(it, p.item); delete it._hay; }
   if (p.event){ if (ctx && ctx.localEvent) Object.assign(ctx.localEvent, p.event); else S.events.unshift(p.event); }
   if (p.add) S.items.push(p.add);
+  if (p.delItem) S.items = S.items.filter(function(i){ return i.id !== p.delItem; });
   if (p.opt && (it = itemById(p.itemId))){
     if (p.opt.pref) it.opts.forEach(function(o){ o.pref = false; });
     var at = -1; it.opts.forEach(function(o, i){ if (o.oid === p.opt.oid) at = i; });
@@ -389,7 +421,7 @@ function demoApi(b){
   function pick(src, keys){ var o = {}; keys.forEach(function(k){ if (src[k] !== undefined) o[k] = src[k]; }); return o; }
   var d = new Date(), z = function(n){ return ("0" + n).slice(-2); };
   var today = d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()), now = today + " " + z(d.getHours()) + ":" + z(d.getMinutes());
-  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes","level"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
+  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes","level","check"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
   var out = {ok: true, role: "edit"}, it, o;
   if (b.action === "report"){
     it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
@@ -457,7 +489,7 @@ function report(it, ev, d){
   Object.assign(it, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: oc.note, level: oc.level, unit: oc.unit}); S.events.unshift(le);
   render(); sync("Saving…");
   toast(ev === "Stock" ? it.name + ": " + oc.note + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : it.name + " marked " + ev.toLowerCase());
-  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, note: ""}, {localEvent: le}); }).catch(function(e){
+  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: d.size || "", note: ""}, {localEvent: le}); }).catch(function(e){
     var cur = itemById(it.id); if (cur) Object.assign(cur, before);
     var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
     sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
@@ -527,18 +559,25 @@ function renderReminders(){
 
 /* The three reports that ask for a number. The unit is the item's own; it is asked for only when the item has none yet. */
 function unitField(it, k){ return {k: k, label: it.unit ? "Unit (set on the item)" : "Unit", list: UNITS.filter(Boolean), readonly: !!it.unit}; }
+function withSize(it, fields){ var z = sizeField(it); return z ? [z].concat(fields) : fields; }
 function askLow(it){
-  openSheet(it.name + " is low", [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")],
-    {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit}); });
+  openSheet(it.name + " is low", withSize(it, [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")]),
+    {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit, size: v.size}); });
 }
 function askStock(it){
-  openSheet("Stock of " + it.name, [{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")],
-    {unit: it.unit || "", level: hasLevel(it) ? it.level : null}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit}); });
+  openSheet("Stock of " + it.name, withSize(it, [{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")]),
+    {unit: it.unit || "", level: hasLevel(it) ? it.level : null}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit, size: v.size}); });
 }
 function askOrdered(it){
   var p = bestOf(it);
-  openSheet("Ordered " + it.name, [{k: "qty", label: "How many were ordered", type: "number"}, {k: "qunit", label: "Unit", list: UNITS.filter(Boolean)}],
-    {qunit: it.unit || (p && p.unit) || ""}, function(v){ report(it, "Ordered", {qty: v.qty, qunit: v.qunit}); });
+  openSheet("Ordered " + it.name, withSize(it, [{k: "qty", label: "How many were ordered", type: "number"}, {k: "qunit", label: "Unit", list: UNITS.filter(Boolean)}]),
+    {qunit: it.unit || (p && p.unit) || ""}, function(v){ report(it, "Ordered", {qty: v.qty, qunit: v.qunit, size: v.size}); });
+}
+/* Out is one click, unless the item holds several sizes: then it asks which. */
+function askOut(it){
+  var z = sizeField(it);
+  if (!z) return report(it, "Out");
+  openSheet(it.name + " is out", [z], {}, function(v){ report(it, "Out", {size: v.size}); });
 }
 
 /* ---------- sign-in ---------- */
@@ -575,7 +614,7 @@ function field(f, val){
   if (f.type === "select"){
     input = h("select", {id: id});
     var choices = f.options.slice(); if (val != null && val !== "" && choices.indexOf(val) < 0) choices.push(val);
-    choices.forEach(function(o){ input.appendChild(h("option", {value: o, text: o || "(none)"})); });
+    choices.forEach(function(o){ input.appendChild(h("option", {value: o, text: o || f.blank || "(none)"})); });
     input.value = choices.indexOf(val) >= 0 ? val : choices[0];
   } else if (f.type === "area"){
     input = h("textarea", {id: id, rows: "2"}); input.value = val == null ? "" : val;
@@ -628,6 +667,7 @@ function itemFields(adding){
     {k: "min", label: "Minimum level", type: "number"},
     {k: "unit", label: "Unit", type: "select", options: UNITS},
     {k: "level", label: "On the shelf now (last count)", type: "number"},
+    {k: "check", label: "Check every (days); empty = no routine check", type: "number"},
     {k: "type", label: "Type (Stocked = reorder when low)", type: "select", options: KINDS},
     {k: "spec", label: "Required grade or spec"},
     {k: "lead", label: "Delivery takes more than 2 weeks", type: "check"},
@@ -667,11 +707,18 @@ function addItem(){
   });
 }
 function editItem(it){
+  /* Delete asks twice. The Sheet script moves the item and its vendor rows to "Deleted items" tabs, so it can be put back. */
+  var del = h("button", {class: "btn", type: "button", text: "Delete item"});
+  del.addEventListener("click", function(){
+    if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Confirm: delete " + it.name; return; }
+    del.disabled = true;
+    save("deleteItem", {id: it.id}, "Deleted " + it.name).then(function(){ S.open = null; closeSheet(); render(); }, function(e){ del.disabled = false; toast(problem(e)); });
+  });
   openSheet("Edit " + it.name, itemFields(false), Object.assign({}, it, {type: kindOf(it)}), function(v){
     v.stocked = v.type === "Stocked" ? "Yes" : (it.stocked === "Personal" ? "Personal" : "No");
     if (v.type === "Price only" && S.scope === "main") S.scope = "prices";
     return save("updateItem", {id: it.id, fields: v}, "Saved " + v.name);
-  });
+  }, del);
 }
 function editOpt(it, o){
   var adding = !o, del = adding ? null : h("button", {class: "btn", type: "button", text: "Remove option"});
@@ -698,7 +745,7 @@ function detail(it){
   d.appendChild(h("div", {class: "note", text: statusLine(it)}));
   if (S.canWrite){
     var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
-    [["Low", function(){ askLow(it); }], ["Out", function(){ report(it, "Out"); }], ["Ordered", function(){ askOrdered(it); }], ["Report stock", function(){ askStock(it); }], ["No need", function(){ report(it, "No need"); }]].forEach(function(b){
+    [["Low", function(){ askLow(it); }], ["Out", function(){ askOut(it); }], ["Ordered", function(){ askOrdered(it); }], ["Report stock", function(){ askStock(it); }], ["No need", function(){ report(it, "No need"); }]].forEach(function(b){
       acts.appendChild(h("button", {class: "btn small", type: "button", text: b[0], onclick: b[1]}));
     });
     d.appendChild(acts);
@@ -708,11 +755,13 @@ function detail(it){
     fact("Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "Personal" ? "Each person keeps their own" : kindOf(it) === "Stocked" ? "Not set yet" : "")),
     fact("On the shelf", hasLevel(it) ? amount(it.level, it.unit) + " at the last count" + (it.statusAt ? " (" + day(it.statusAt) + ")" : "") : ""),
     fact("Type", kindOf(it)),
+    fact("Routine check", typeof it.check === "number" && it.check > 0 ? "Every " + it.check + " days · last checked " + (it.statusAt ? day(it.statusAt) : "never") +
+      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(it.statusAt).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) : ""),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
-    fact("Source", it.source), fact("Notes", it.notes)));
+    fact("Source", it.source), fact("Notes", it.notes), fact("Item code", h("span", {class: "mono", text: it.id}))));
   var all = it.opts || [], shownAll = !!S.moreOpts[it.id] || !all.some(function(o){ return !o.hidden; });
-  var opts = shownAll ? all : all.filter(function(o){ return !o.hidden; }), tucked = all.length - opts.length;
+  var opts = (shownAll ? all : all.filter(function(o){ return !o.hidden; })).slice().sort(function(a, b){ return natCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); }), tucked = all.length - opts.length;
   if (opts.length){
     var tb = h("tbody");
     opts.forEach(function(o){
@@ -732,7 +781,7 @@ function detail(it){
     });
     d.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null,
       h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Notes"}), h("th"))), tb)));
-    if (tucked) d.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "More: " + tucked + (tucked === 1 ? " other price row" : " other price rows"), onclick: function(){ S.moreOpts[it.id] = true; render(); }})));
+    if (tucked) d.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "More: " + tucked + (tucked === 1 ? " other size or price row" : " other sizes and price rows"), onclick: function(){ S.moreOpts[it.id] = true; render(); }})));
   } else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
   if (S.canWrite) d.appendChild(h("div", {class: "acts"},
     h("button", {class: "btn small", type: "button", text: "Add vendor option", onclick: function(){ editOpt(it, null); }}),
@@ -750,7 +799,9 @@ function renderFilters(){
   scoped.forEach(function(it){ var s = statusOf(it); if (s === "None"){ if (noReport(it)) counts.None++; } else if (counts[s] != null) counts[s]++; });
   var nPrice = 0, nMore = 0; S.items.forEach(function(it){ var w = showOf(it); if (w === "Price list") nPrice++; else if (w === "More") nMore++; });
   f.textContent = "";
-  [["all","All"],["Low","Low"],["Out","Out"],["Ordered","Ordered"],["None","No report"],["No need","No need"]].forEach(function(p){
+  counts.due = S.items.filter(isDue).length;
+  [["all","All"],["due","Due to check"],["Low","Low"],["Out","Out"],["Ordered","Ordered"],["None","No report"],["No need","No need"]].forEach(function(p){
+    if (p[0] === "due" && !counts.due) return;
     f.appendChild(h("button", {class: "chip", type: "button", "aria-pressed": String(S.status === p[0]), onclick: function(){ S.status = p[0]; render(); }}, p[1] + " ", h("span", {class: "num", text: String(counts[p[0]])})));
   });
   var ks = h("select", {id: "kindSel", "aria-label": "Type", onchange: function(){ S.kind = ks.value; render(); }}, h("option", {value: "all", text: "All types"}));
@@ -770,6 +821,28 @@ function renderFilters(){
     if (S.scope !== "main" && nMore) f.appendChild(h("button", {class: "chip", id: "moreChip", type: "button", "aria-pressed": String(S.scope === "more"), title: "Sizes that were hidden in the overseas price list",
       onclick: function(){ S.scope = S.scope === "more" ? "prices" : "more"; S.open = null; render(); }}, "More ", h("span", {class: "num", text: String(nMore)})));
   }
+}
+function renderDue(){
+  var box = $("due"); box.textContent = "";
+  var due = S.loaded ? sorted(S.items.filter(isDue)) : [];
+  if (!due.length) return;
+  var card = h("div", {class: "due"}, h("h2", null, "Due to check", h("span", {class: "count", text: String(due.length)})));
+  if (S.status === "due"){
+    card.appendChild(h("div", {class: "note", text: "The list below shows only these items. Any report on an item (Report stock, Low, Out, Ordered or No need) counts as its check."}));
+    card.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "Show everything again", onclick: function(){ S.status = "all"; S.open = null; render(); }})));
+  } else {
+    card.appendChild(h("div", {class: "note", text: "Not checked within their interval, or never. Open one and report on it; any report counts as its check."}));
+    var names = h("div", {class: "names"});
+    due.slice(0, 8).forEach(function(it){
+      names.appendChild(h("button", {class: "chip", type: "button", text: it.name, onclick: function(){
+        S.status = "due"; S.open = it.id; S.tab = "items"; render();
+        setTimeout(function(){ var r = document.querySelector('.row[aria-expanded="true"]'); if (r && r.scrollIntoView) r.scrollIntoView({block: "center"}); }, 0);
+      }}));
+    });
+    card.appendChild(names);
+    card.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small primary", type: "button", text: "Show all " + due.length, onclick: function(){ S.status = "due"; S.open = null; render(); }})));
+  }
+  box.appendChild(card);
 }
 function renderItems(){
   var box = $("list"); box.textContent = "";
@@ -794,15 +867,24 @@ function renderItems(){
     box.appendChild(e);
     return;
   }
-  var wrap = h("div", {class: "list"}), last = null;
+  var wrap = h("div", {class: "list"}), last = null, folding = !S.q.trim() && S.cat === "all" && S.status === "all" && S.kind === "all", per = {};
+  list.forEach(function(it){ per[it.cat] = (per[it.cat] || 0) + 1; });
   list.forEach(function(it){
-    if (it.cat !== last){ wrap.appendChild(h("div", {class: "group", text: it.cat || "Uncategorized"})); last = it.cat; }
+    var folded = folding && !!S.collapsed[it.cat];
+    if (it.cat !== last){
+      last = it.cat;
+      var cat = it.cat;
+      wrap.appendChild(folding ? h("button", {class: "group", type: "button", "aria-expanded": String(!folded), onclick: function(){ toggleCat(cat); }},
+          h("span", {text: (folded ? "▸ " : "▾ ") + (cat || "Uncategorized")}), h("span", {class: "gn", text: per[cat] + (per[cat] === 1 ? " item" : " items")}))
+        : h("div", {class: "group", text: it.cat || "Uncategorized"}));
+    }
+    if (folded) return;
     var s = statusOf(it), k = kindOf(it), p = bestOf(it), open = S.open === it.id, nOpt = (it.opts || []).length;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
       h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : pillOf(s)), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
-        h("div", {class: "meta"}, h("span", {class: "mono", text: it.id}), it.loc ? " · " + it.loc : "", hasLevel(it) ? " · " + amount(it.level, it.unit) + " on shelf" : "", it.lead ? " · long lead time" : "")),
+        h("div", {class: "meta"}, [it.loc, hasLevel(it) ? amount(it.level, it.unit) + " on shelf" : "", isDue(it) ? "due to check" : "", it.lead ? "long lead time" : ""].filter(Boolean).join(" · "))),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
     if (open) wrap.appendChild(detail(it));
   });
@@ -813,7 +895,7 @@ function renderItems(){
   box.appendChild(wrap);
 }
 function reorderText(list){
-  return list.map(function(it){ var p = bestOf(it); return it.name + " (" + it.id + ", " + statusOf(it) + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
+  return list.map(function(it){ var p = bestOf(it); return it.name + " (" + statusOf(it) + (it.statusNote ? ": " + it.statusNote : "") + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
 }
 function renderReorder(){
   var v = $("v-reorder"); v.textContent = "";
@@ -874,7 +956,7 @@ function render(){
   $("exportBtn").hidden = !S.items.length;
   $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
   $("who").textContent = S.role ? S.name + (S.role === "edit" ? " · can edit" : " · read only") : "";
-  renderFilters(); renderItems(); renderReorder(); renderActivity(); renderReminders();
+  renderDue(); renderFilters(); renderItems(); renderReorder(); renderActivity(); renderReminders();
 }
 
 /* ---------- export ---------- */
@@ -906,6 +988,7 @@ document.addEventListener("keydown", function(ev){ if (ev.key === "Escape" && !$
 document.addEventListener("visibilitychange", function(){
   if (!document.hidden && S.role && $("sheet").hidden && !pending && Date.now() - S.lastLoad > 120000) load(true);
 });
+S.collapsed = loadCollapsed();
 var hash = (location.hash || "").replace("#", ""); if (hash === "reorder" || hash === "activity" || hash === "reminders") S.tab = hash;
 render();
 
