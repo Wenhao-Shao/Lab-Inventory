@@ -89,8 +89,10 @@ button.group:hover{color:var(--ink)}
 .due{background:var(--surface);border:1.5px solid var(--low);border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;flex-direction:column;gap:8px}
 .due h2{display:flex;gap:8px;align-items:baseline}
 .due .names{display:flex;gap:6px;flex-wrap:wrap}
-.st{display:flex;flex-direction:column;gap:3px}
-.pill.Due{color:var(--low);background:transparent;border:1px solid var(--low);padding:1px 7px}
+.st{display:flex;gap:3px;width:86px}
+.st .pill{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st.isdue .pill{font-family:var(--display);font-size:11.5px;padding:2px 2px}
+.st .pill.Due{flex:0 0 auto;color:var(--low);background:transparent;border:1px solid var(--low);padding:1px 4px}
 .pill.NoNeed{color:var(--none);background:var(--none-bg)}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
@@ -929,7 +931,7 @@ function renderItems(){
     var s = statusOf(it), k = kindOf(it), p = bestOf(it), open = S.open === it.id, nOpt = (it.opts || []).length;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
-      h("span", {class: "st"}, h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : pillOf(s)), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
+      h("span", {class: "st" + (S.isAdmin && isDue(it) ? " isdue" : "")}, h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : pillOf(s)), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
         S.isAdmin && isDue(it) ? h("span", {class: "pill Due", title: "Due to check: report on it (Report stock, Low, Out, Ordered or No need)", text: "Due"}) : null),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
         h("div", {class: "meta"}, [it.loc, hasLevel(it) ? amount(it.level, it.unit) + " on shelf" : "", it.lead ? "long lead time" : ""].filter(Boolean).join(" · "))),
