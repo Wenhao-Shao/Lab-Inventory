@@ -249,7 +249,7 @@ var KEY = "shaoLabInventory";
 var DEMO = false;
 var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Research chemicals",
   "Gloves & PPE","Pipettes & tips","Filtration, syringes & needles","Vials, tubes & plates","Bottles & containers","Glassware","Stoppers, septa & joints","Stir bars",
-  "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
+  "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","General supply","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
   "Pumps & vacuum","Heating & baths","Clamps, stands & supports","Asset","Benchtop equipment","Consumables"];
 var KINDS = ["Stocked","On hand","Asset","Price only"];
 var KIND_NOTE = { "On hand": "On hand; not on the reorder list", "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
@@ -340,6 +340,18 @@ function sizesOf(it){
   return seen.sort(natCmp);
 }
 function sizeField(it){ var z = sizesOf(it); return z.length > 1 ? {k: "size", label: "Which size", type: "select", options: [""].concat(z), blank: "Not one size in particular", wide: true} : null; }
+/* Web addresses become links named by their site ("amazon.com"). A vendor row can hold several, kept as "url ; url". */
+var URL_RE = /https?:\/\/[^\s;"'<>]+/gi;
+function linkList(v){ var us = String(v || "").match(URL_RE) || []; return us.filter(function(u, i){ return us.indexOf(u) === i; }); }
+function hostOf(u){ try { return new URL(u).hostname.replace(/^www\./, ""); } catch(e){ return "link"; } }
+function linkEl(u){ return h("a", {href: u, target: "_blank", rel: "noopener noreferrer", title: u, text: hostOf(u)}); }
+function linksEl(v){ var us = linkList(v); if (!us.length) return null; var sp = h("span", {class: "links"}); us.forEach(function(u, i){ if (i) sp.appendChild(document.createTextNode(" · ")); sp.appendChild(linkEl(u)); }); return sp; }
+function linkify(text){
+  var f = document.createDocumentFragment(), str = String(text || ""), re = new RegExp(URL_RE.source, "gi"), last = 0, m;
+  while ((m = re.exec(str))){ f.appendChild(document.createTextNode(str.slice(last, m.index))); f.appendChild(linkEl(m[0])); last = m.index + m[0].length; }
+  f.appendChild(document.createTextNode(str.slice(last)));
+  return f;
+}
 function catRank(c){ var i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i; }
 function sorted(list){
   return list.slice().sort(function(a, b){ return catRank(a.cat) - catRank(b.cat) || String(a.cat).localeCompare(String(b.cat)) || natCmp(a.name, b.name) || a.id.localeCompare(b.id); });
@@ -431,7 +443,7 @@ function demoApi(b){
   function pick(src, keys){ var o = {}; keys.forEach(function(k){ if (src[k] !== undefined) o[k] = src[k]; }); return o; }
   var d = new Date(), z = function(n){ return ("0" + n).slice(-2); };
   var today = d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()), now = today + " " + z(d.getHours()) + ":" + z(d.getMinutes());
-  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes","level","check"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment"];
+  var IK = ["name","aka","cas","cat","loc","min","unit","stocked","type","lead","exp","spec","notes","level","check"], OK_ = ["vendor","catalog","grade","pack","unit","price","pref","pnote","comment","link"];
   var out = {ok: true, role: "admin"}, it, o;
   if (b.action === "report"){
     it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
@@ -711,6 +723,7 @@ function optFields(p){
     {k: p + "unit", label: "Pack unit", type: "select", options: UNITS},
     {k: p + "price", label: "Price ($)", type: "number"},
     {k: p + "pnote", label: "Price note (promotion, quote)"},
+    {k: p + "link", label: "Link: product page (for several, one per line)", type: "area", wide: true},
     {k: p + "pref", label: "Starred (preferred); several rows can be starred", type: "check"},
     {k: p + "comment", label: "Comment", wide: true}
   ];
@@ -718,7 +731,7 @@ function optFields(p){
 function optFrom(v, p){
   p = p || "";
   return { vendor: v[p + "vendor"], catalog: v[p + "catalog"], grade: v[p + "grade"], pack: v[p + "pack"], unit: v[p + "unit"],
-           price: v[p + "price"], pref: !!v[p + "pref"], pnote: v[p + "pnote"], comment: v[p + "comment"] };
+           price: v[p + "price"], pref: !!v[p + "pref"], pnote: v[p + "pnote"], comment: v[p + "comment"], link: linkList(v[p + "link"]).join(" ; ") };
 }
 function addItem(){
   openSheet("Add an item", itemFields(true), {type: "Stocked", unit: "", o_unit: "", name: S.q.trim()}, function(v){
@@ -768,7 +781,7 @@ function editOpt(it, o){
       sync("Not saved"); render(); toast("Not removed, so the option is back. " + problem(e), 9000);
     });
   });
-  openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields(), o || {unit: it.unit || "g", pref: !(it.opts || []).length}, function(v){
+  openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields(), o ? Object.assign({}, o, {link: linkList(o.link).join("\n")}) : {unit: it.unit || "g", pref: !(it.opts || []).length}, function(v){
     /* Shows at once and saved in the background, like reports. A new row has no ID until the Sheet answers, so it cannot be edited or starred until then. */
     var opt = optFrom(v), before = it.opts.map(function(x){ return {ref: x, val: Object.assign({}, x)}; }), local;
     if (o){ Object.assign(o, opt); local = o; }
@@ -810,12 +823,11 @@ function detail(it){
       : kindOf(it) !== "Price only" ? "None; set one in Edit item → Check every (days)" : ""),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
-    fact("Source", it.source), fact("Notes", it.notes), fact("Item code", h("span", {class: "mono", text: it.id}))));
+    fact("Source", it.source), fact("Notes", it.notes ? h("span", null, linkify(it.notes)) : ""), fact("Item code", h("span", {class: "mono", text: it.id}))));
   var opts = (it.opts || []).slice().sort(function(a, b){ return natCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
   if (opts.length){
     var tb = h("tbody");
     opts.forEach(function(o){
-      var link = /^https?:\/\//.test(o.link || "") ? h("a", {href: o.link, target: "_blank", rel: "noopener noreferrer", text: "product page"}) : null;
       var bought = o.bought ? "bought " + o.bought + (o.bought === 1 ? " time" : " times") + (o.last ? ", last " + day(o.last) : "") : "";
       var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
       tb.appendChild(h("tr", {class: o.hidden ? "dim" : null},
@@ -826,11 +838,12 @@ function detail(it){
         h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
         h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
         h("td", {class: "r num", text: money(o.price)}), h("td", {class: "r num", text: per}),
-        h("td", null, [bought, o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · "), link ? " " : null, link),
+        h("td", null, linksEl(o.link)),
+        h("td", null, linkify([bought, o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · "))),
         h("td", null, S.canWrite ? (o.oid ? h("button", {class: "btn small", type: "button", text: "Edit", onclick: function(){ editOpt(it, o); }}) : h("span", {class: "note", text: "saving…"})) : null)));
     });
     d.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null,
-      h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Notes"}), h("th"))), tb)));
+      h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Link"}), h("th", {text: "Notes"}), h("th"))), tb)));
     if (opts.some(function(o){ return o.hidden; })) d.appendChild(h("div", {class: "note", text: "Grey rows are sizes or prices from the price list with no record of the lab buying them."}));
   } else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
   if (S.canWrite) d.appendChild(h("div", {class: "acts"},
@@ -961,7 +974,7 @@ function renderReorder(){
       tb.appendChild(h("tr", null,
         h("td", null, h("span", {class: "pill " + statusOf(it), text: statusOf(it)})),
         h("td", null, nm, h("div", {class: "note", text: (day(it.statusAt) || "date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "") + (typeof it.min === "number" ? " · min " + amount(it.min, it.unit) : "")})),
-        h("td", {text: p ? p.vendor : "none recorded"}), h("td", {class: "mono", text: p ? p.catalog : ""}),
+        h("td", null, p ? p.vendor : "none recorded", p && linkList(p.link).length ? h("div", {class: "note"}, linksEl(p.link)) : null), h("td", {class: "mono", text: p ? p.catalog : ""}),
         h("td", {class: "num", text: pack(p)}), h("td", {class: "r num", text: p ? money(p.price) : ""}),
         h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: function(){ ask(it); }}) : null)));
     });

@@ -35,7 +35,7 @@ var OPT_COLS = ['Option ID', 'Item ID', 'Vendor', 'Catalog #', 'Grade', 'Pack si
   'Preferred', 'Price note', 'Alternative catalog #', 'Price checked on', 'Comment', 'Link', 'Hidden in price list', 'Times bought', 'Last bought'];
 var OPT_KEYS = ['oid', 'item', 'vendor', 'catalog', 'grade', 'pack', 'unit', 'price', 'pref', 'pnote', 'alt', 'checked', 'comment', 'link', 'hidden', 'bought', 'last'];
 var OPT_TYPES = ['t', 't', 't', 't', 't', 'n', 't', 'p', 'b', 't', 't', 't', 't', 't', 'b', 'n', 't'];
-var OPT_KEPT = ['link', 'hidden', 'bought', 'last'];   // set by the purchase records, not edited in the page
+var OPT_KEPT = ['hidden', 'bought', 'last'];   // set by the purchase records, not edited in the page
 
 var EVENT_COLS = ['Date', 'Item ID', 'Item', 'Event', 'Reported by', 'Note'];
 var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
@@ -54,7 +54,7 @@ var PREFIX = { 'General organic solvents': 'SOL', 'Spec/HPLC solvents': 'SPC', '
   'Research chemicals': 'RCH', 'Gloves & PPE': 'PPE', 'Pipettes & tips': 'PIP', 'Filtration, syringes & needles': 'FIL',
   'Vials, tubes & plates': 'VIA', 'Bottles & containers': 'BOT', 'Glassware': 'GLS', 'Stoppers, septa & joints': 'STP',
   'Stir bars': 'STR', 'Substrates & microscopy': 'SUB', 'Chromatography & TLC': 'TLC', 'Hand tools & weighing': 'TOL',
-  'Cleaning & wipes': 'CLN', 'Tapes, films & general supplies': 'SUP', 'Desiccants': 'DES', 'Tubing & fluid transfer': 'TUB',
+  'Cleaning & wipes': 'CLN', 'Tapes, films & general supplies': 'SUP', 'General supply': 'SUP', 'Desiccants': 'DES', 'Tubing & fluid transfer': 'TUB',
   'Pumps & vacuum': 'PMP', 'Heating & baths': 'HEA', 'Clamps, stands & supports': 'CLP', 'Benchtop equipment': 'EQP', 'Asset': 'EQP',
   'Consumables': 'CON' };
 var EVENTS_SENT = 150;
@@ -71,6 +71,7 @@ function onOpen() {
   if (typeof applyChanges1008 === 'function') menu.addItem('5. Apply changes (8 Oct)', 'applyChanges1008');
   if (typeof applyChanges1021 === 'function') menu.addItem('6. Apply changes (21 Oct)', 'applyChanges1021');
   if (typeof applyChanges1021b === 'function') menu.addItem('7. Apply changes (21 Oct, part 2)', 'applyChanges1021b');
+  if (typeof applyChanges1021c === 'function') menu.addItem('8. Apply changes (21 Oct, part 3)', 'applyChanges1021c');
   menu.addToUi();
 }
 
@@ -236,7 +237,9 @@ function addItem_(ss, body, role) {
   var it = cleanItem_(body.item || {});
   if (!it.name || !it.cat) throw fail_('invalid', 'Name and category are required.');
   var items = ss.getSheetByName(TABS.items), pre = PREFIX[it.cat] || 'GEN';
-  it.id = pre + '-' + ('00' + (maxNumber_(items, 1, pre + '-') + 1)).slice(-3);
+  var used = maxNumber_(items, 1, pre + '-');
+  ['Merged items', 'Deleted items'].forEach(function (t) { var sh = ss.getSheetByName(t); if (sh) used = Math.max(used, maxNumber_(sh, 1, pre + '-')); });
+  it.id = pre + '-' + ('00' + (used + 1)).slice(-3);
   it.source = ''; it.status = ''; it.statusAt = ''; it.statusBy = ''; it.statusNote = '';
   kind_(it);
   cols_(items, ITEM_COLS);
@@ -245,7 +248,7 @@ function addItem_(ss, body, role) {
   if (body.opt && (body.opt.vendor || body.opt.catalog)) {
     var o = cleanOpt_(body.opt), opts = ss.getSheetByName(TABS.opts);
     o.oid = nextOid_(opts); o.item = it.id; o.pref = true; o.alt = '';
-    o.link = ''; o.hidden = false; o.bought = null; o.last = '';
+    o.link = o.link || ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
     cols_(opts, OPT_COLS);
     append_(opts, optRow_(o), OPT_TYPES);
@@ -286,9 +289,10 @@ function saveOption_(ss, body) {
     var old = fromRow_(opts.getRange(row, 1, 1, OPT_KEYS.length).getValues()[0], OPT_KEYS, OPT_TYPES);
     o.oid = old.oid; o.alt = old.alt;
     OPT_KEPT.forEach(function (k) { o[k] = old[k]; });
+    if (o.link === undefined) o.link = old.link;   // a page from before 21 Oct does not send the link
     o.checked = o.price != null && o.price !== old.price ? today_(ss) : old.checked;
   } else {
-    o.oid = nextOid_(opts); o.alt = ''; o.link = ''; o.hidden = false; o.bought = null; o.last = '';
+    o.oid = nextOid_(opts); o.alt = ''; o.link = o.link || ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
   }
   // Several vendor rows of one item can be starred (21 Oct 2026), so a star here leaves the other rows alone.
@@ -446,7 +450,12 @@ function kind_(it) {
 }
 function cleanOpt_(f) {
   return { vendor: text_(f.vendor, 80), catalog: text_(f.catalog, 60), grade: text_(f.grade, 160), pack: num_(f.pack),
-    unit: text_(f.unit, 16), price: num_(f.price), pref: !!f.pref, pnote: text_(f.pnote, 160), comment: text_(f.comment, 800) };
+    unit: text_(f.unit, 16), price: num_(f.price), pref: !!f.pref, pnote: text_(f.pnote, 160), comment: text_(f.comment, 800),
+    link: f.link === undefined ? undefined : links_(f.link) };
+}
+/** One or more web addresses, kept as "url ; url". Anything that is not an http(s) address is dropped. */
+function links_(v) {
+  return (String(v == null ? '' : v).match(/https?:\/\/[^\s;"'<>]+/gi) || []).filter(function (u, i, a) { return a.indexOf(u) === i; }).join(' ; ').slice(0, 2000);
 }
 /** Trimmed text with a length cap; a leading "=" is dropped so nothing typed in the page can become a formula. */
 function text_(v, max) { return String(v == null ? '' : v).trim().replace(/^[=\s]+/, '').slice(0, max); }
