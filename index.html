@@ -855,7 +855,7 @@ function renderItems(){
   function reveal(){
     var b = [];
     if (S.scope === "main" && inPrice + inMore) b.push(h("button", {class: "btn small", id: "revealPrices", type: "button",
-      text: "Show " + (inPrice || inMore) + (inPrice ? " from the price list" : " from More"), onclick: function(){ S.scope = inPrice ? "prices" : "more"; render(); }}));
+      text: "Show " + (inPrice + inMore) + " from the price list", onclick: function(){ S.scope = "more"; render(); }}));
     if (S.scope === "prices" && inMore) b.push(h("button", {class: "btn small", id: "revealMore", type: "button", text: "More: " + inMore + " hidden price-list " + (inMore === 1 ? "row" : "rows"), onclick: function(){ S.scope = "more"; render(); }}));
     return b;
   }
