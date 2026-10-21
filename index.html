@@ -240,7 +240,7 @@ function chem(name){
 
 /* ---------- state ---------- */
 var S = { items: [], events: [], reminders: [], showDone: false, collapsed: null, loaded: false, name: "", pass: "", role: null, canWrite: false,
-          tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "main", moreOpts: {}, open: null, dead: null, locked: false, lastLoad: 0 };
+          tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "more", open: null, dead: null, locked: false, lastLoad: 0 };
 var KEY = "shaoLabInventory";
 var DEMO = false;
 var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Research chemicals",
@@ -756,12 +756,12 @@ function detail(it){
     fact("On the shelf", hasLevel(it) ? amount(it.level, it.unit) + " at the last count" + (it.statusAt ? " (" + day(it.statusAt) + ")" : "") : ""),
     fact("Type", kindOf(it)),
     fact("Routine check", typeof it.check === "number" && it.check > 0 ? "Every " + it.check + " days · last checked " + (it.statusAt ? day(it.statusAt) : "never") +
-      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(it.statusAt).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) : ""),
+      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(it.statusAt).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) + (S.canWrite ? " (change in Edit item)" : "")
+      : kindOf(it) !== "Price only" ? "None" + (S.canWrite ? "; set one in Edit item → Check every (days)" : "") : ""),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
     fact("Source", it.source), fact("Notes", it.notes), fact("Item code", h("span", {class: "mono", text: it.id}))));
-  var all = it.opts || [], shownAll = !!S.moreOpts[it.id] || !all.some(function(o){ return !o.hidden; });
-  var opts = (shownAll ? all : all.filter(function(o){ return !o.hidden; })).slice().sort(function(a, b){ return natCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); }), tucked = all.length - opts.length;
+  var opts = (it.opts || []).slice().sort(function(a, b){ return natCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
   if (opts.length){
     var tb = h("tbody");
     opts.forEach(function(o){
@@ -781,7 +781,7 @@ function detail(it){
     });
     d.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null,
       h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Notes"}), h("th"))), tb)));
-    if (tucked) d.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "More: " + tucked + (tucked === 1 ? " other size or price row" : " other sizes and price rows"), onclick: function(){ S.moreOpts[it.id] = true; render(); }})));
+    if (opts.some(function(o){ return o.hidden; })) d.appendChild(h("div", {class: "note", text: "Grey rows are sizes or prices from the price list with no record of the lab buying them."}));
   } else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
   if (S.canWrite) d.appendChild(h("div", {class: "acts"},
     h("button", {class: "btn small", type: "button", text: "Add vendor option", onclick: function(){ editOpt(it, null); }}),
@@ -816,8 +816,8 @@ function renderFilters(){
   f.appendChild(sel);
   if (nPrice || nMore){
     f.appendChild(h("span", {class: "sep"}));
-    f.appendChild(h("button", {class: "chip", id: "priceChip", type: "button", "aria-pressed": String(S.scope !== "main"), title: "Items the lab has a price for but no record of buying",
-      onclick: function(){ S.scope = S.scope === "main" ? "prices" : "main"; S.open = null; render(); }}, "Price list ", h("span", {class: "num", text: String(nPrice)})));
+    f.appendChild(h("button", {class: "chip", id: "priceChip", type: "button", "aria-pressed": String(S.scope !== "main"), title: "Items the lab has a price for but no record of buying. Shown by default; click to hide them",
+      onclick: function(){ S.scope = S.scope === "main" ? "more" : "main"; S.open = null; render(); }}, "Price list ", h("span", {class: "num", text: String(nPrice)})));
     if (S.scope !== "main" && nMore) f.appendChild(h("button", {class: "chip", id: "moreChip", type: "button", "aria-pressed": String(S.scope === "more"), title: "Sizes that were hidden in the overseas price list",
       onclick: function(){ S.scope = S.scope === "more" ? "prices" : "more"; S.open = null; render(); }}, "More ", h("span", {class: "num", text: String(nMore)})));
   }
