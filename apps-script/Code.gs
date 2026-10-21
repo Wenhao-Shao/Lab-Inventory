@@ -55,7 +55,7 @@ var PREFIX = { 'General organic solvents': 'SOL', 'Spec/HPLC solvents': 'SPC', '
   'Vials, tubes & plates': 'VIA', 'Bottles & containers': 'BOT', 'Glassware': 'GLS', 'Stoppers, septa & joints': 'STP',
   'Stir bars': 'STR', 'Substrates & microscopy': 'SUB', 'Chromatography & TLC': 'TLC', 'Hand tools & weighing': 'TOL',
   'Cleaning & wipes': 'CLN', 'Tapes, films & general supplies': 'SUP', 'Desiccants': 'DES', 'Tubing & fluid transfer': 'TUB',
-  'Pumps & vacuum': 'PMP', 'Heating & baths': 'HEA', 'Clamps, stands & supports': 'CLP', 'Benchtop equipment': 'EQP',
+  'Pumps & vacuum': 'PMP', 'Heating & baths': 'HEA', 'Clamps, stands & supports': 'CLP', 'Benchtop equipment': 'EQP', 'Asset': 'EQP',
   'Consumables': 'CON' };
 var EVENTS_SENT = 150;
 
@@ -70,6 +70,7 @@ function onOpen() {
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
   if (typeof applyChanges1008 === 'function') menu.addItem('5. Apply changes (8 Oct)', 'applyChanges1008');
   if (typeof applyChanges1021 === 'function') menu.addItem('6. Apply changes (21 Oct)', 'applyChanges1021');
+  if (typeof applyChanges1021b === 'function') menu.addItem('7. Apply changes (21 Oct, part 2)', 'applyChanges1021b');
   menu.addToUi();
 }
 
@@ -290,17 +291,7 @@ function saveOption_(ss, body) {
     o.oid = nextOid_(opts); o.alt = ''; o.link = ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
   }
-  if (o.pref) {
-    // One read; a write only for the rows that still carry a star (usually one). Writing every row of a large item took seconds.
-    var last = opts.getLastRow(), pc = OPT_KEYS.indexOf('pref') + 1;
-    if (last >= 2) {
-      var vals = opts.getRange(2, 2, last - 1, pc - 1).getValues();
-      for (var i = 0; i < vals.length; i++) {
-        var star = vals[i][pc - 2];
-        if (String(vals[i][0]) === o.item && i + 2 !== row && (star === true || String(star).toUpperCase() === 'TRUE')) opts.getRange(i + 2, pc).setValue(false);
-      }
-    }
-  }
+  // Several vendor rows of one item can be starred (21 Oct 2026), so a star here leaves the other rows alone.
   if (row) write_(opts, row, [optRow_(o)], OPT_TYPES); else append_(opts, optRow_(o), OPT_TYPES);
   return { itemId: o.item, opt: sent_(o) };
 }

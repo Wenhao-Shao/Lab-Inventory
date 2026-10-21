@@ -250,7 +250,7 @@ var DEMO = false;
 var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Research chemicals",
   "Gloves & PPE","Pipettes & tips","Filtration, syringes & needles","Vials, tubes & plates","Bottles & containers","Glassware","Stoppers, septa & joints","Stir bars",
   "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
-  "Pumps & vacuum","Heating & baths","Clamps, stands & supports","Benchtop equipment","Consumables"];
+  "Pumps & vacuum","Heating & baths","Clamps, stands & supports","Asset","Benchtop equipment","Consumables"];
 var KINDS = ["Stocked","On hand","Asset","Price only"];
 var KIND_NOTE = { "On hand": "On hand; not on the reorder list", "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
 /* Type and Show come from the Sheet. A Sheet that has not been updated yet has neither, so fall back to the old "Stocked" column. */
@@ -283,7 +283,12 @@ function forget(){ try { localStorage.removeItem(KEY); localStorage.removeItem(K
 
 function money(n){ return typeof n === "number" ? "$" + n.toFixed(2) : ""; }
 function pack(o){ return o && o.pack != null && o.pack !== "" ? o.pack + " " + (o.unit || "") : ""; }
-function prefOf(it){ var o = it.opts || []; for (var i = o.length - 1; i >= 0; i--) if (o[i].pref) return o[i]; return null; }
+/* An item can have several starred (preferred) vendor rows; the one shown first is the starred row bought most recently, else the first starred row. */
+function prefOf(it){
+  var st = (it.opts || []).filter(function(o){ return o.pref; });
+  if (!st.length) return null;
+  return st.filter(function(o){ return o.last; }).sort(function(a, b){ return String(b.last).localeCompare(String(a.last)); })[0] || st[0];
+}
 /* The option to show for an item: the preferred one; if none is marked, the one bought most recently; if none was bought, the first. */
 function bestOf(it){
   var p = prefOf(it); if (p) return p;
@@ -365,7 +370,6 @@ function applyPatch(p, ctx){
   if (p.add) S.items.push(p.add);
   if (p.delItem) S.items = S.items.filter(function(i){ return i.id !== p.delItem; });
   if (p.opt && (it = itemById(p.itemId))){
-    if (p.opt.pref) it.opts.forEach(function(o){ o.pref = false; });
     var at = -1; it.opts.forEach(function(o, i){ if (o.oid === p.opt.oid || (ctx && ctx.localOpt && o === ctx.localOpt)) at = i; });
     if (at >= 0) it.opts[at] = p.opt; else it.opts.push(p.opt);
     delete it._hay;
@@ -445,7 +449,6 @@ function demoApi(b){
   } else if (b.action === "saveOption"){
     it = find(b.itemId); if (!it) return {ok: false, error: "not_found"};
     o = pick(b.opt, OK_);
-    if (o.pref) it.opts.forEach(function(x){ x.pref = false; });
     var old = it.opts.filter(function(x){ return x.oid === b.oid; })[0];
     if (old){ if (o.price != null && o.price !== old.price) o.checked = today; Object.assign(old, o); }
     else it.opts.push(Object.assign(dOpt("N" + (++D.n), "", "", "", null, "", null, false), o, {checked: o.price == null ? "" : today}));
@@ -501,14 +504,13 @@ function report(it, ev, d){
     sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
   });
 }
-/* One click on the star: this option becomes the preferred one, and the others lose their star. */
-function makePreferred(it, o){
-  var before = it.opts.map(function(x){ return x.pref; });
-  it.opts.forEach(function(x){ x.pref = x === o; }); render(); toast((o.vendor || "This option") + " is now the preferred vendor for " + it.name); sync("Saving…");
-  var opt = {vendor: o.vendor, catalog: o.catalog, grade: o.grade, pack: o.pack, unit: o.unit, price: o.price, pref: true, pnote: o.pnote, comment: o.comment};
+/* One click on a star turns it on or off. Other rows keep their stars: an item can have several preferred vendor rows. */
+function toggleStar(it, o){
+  var was = !!o.pref;
+  o.pref = !was; render(); toast((o.vendor || "This option") + (was ? " is no longer starred for " : " is now starred for ") + it.name); sync("Saving…");
+  var opt = {vendor: o.vendor, catalog: o.catalog, grade: o.grade, pack: o.pack, unit: o.unit, price: o.price, pref: !was, pnote: o.pnote, comment: o.comment};
   return enqueue(function(){ return api("saveOption", {itemId: it.id, oid: o.oid, opt: opt}); }).catch(function(e){
-    var cur = itemById(it.id); if (cur && cur.opts.length === before.length) cur.opts.forEach(function(x, i){ x.pref = before[i]; });
-    sync("Not saved"); render(); toast("Not saved, so the star was put back. " + problem(e), 9000);
+    o.pref = was; sync("Not saved"); render(); toast("Not saved, so the star was put back. " + problem(e), 9000);
   });
 }
 /* ---------- reminders: a shared checklist. Ticking one off shows at once and is saved in the background. ---------- */
@@ -709,7 +711,7 @@ function optFields(p){
     {k: p + "unit", label: "Pack unit", type: "select", options: UNITS},
     {k: p + "price", label: "Price ($)", type: "number"},
     {k: p + "pnote", label: "Price note (promotion, quote)"},
-    {k: p + "pref", label: "This is the preferred option", type: "check"},
+    {k: p + "pref", label: "Starred (preferred); several rows can be starred", type: "check"},
     {k: p + "comment", label: "Comment", wide: true}
   ];
 }
@@ -769,7 +771,6 @@ function editOpt(it, o){
   openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields(), o || {unit: it.unit || "g", pref: !(it.opts || []).length}, function(v){
     /* Shows at once and saved in the background, like reports. A new row has no ID until the Sheet answers, so it cannot be edited or starred until then. */
     var opt = optFrom(v), before = it.opts.map(function(x){ return {ref: x, val: Object.assign({}, x)}; }), local;
-    if (opt.pref) it.opts.forEach(function(x){ x.pref = false; });
     if (o){ Object.assign(o, opt); local = o; }
     else { local = Object.assign({oid: "", alt: "", link: "", hidden: false, bought: null, last: "", checked: ""}, opt); it.opts.push(local); }
     delete it._hay; render(); toast("Saved the " + opt.vendor + " option"); sync("Saving…");
@@ -805,7 +806,7 @@ function detail(it){
     fact("On the shelf", hasLevel(it) ? amount(it.level, it.unit) + " at the last count" + (it.statusAt ? " (" + day(it.statusAt) + ")" : "") : ""),
     fact("Type", kindOf(it)),
     fact("Routine check", !S.isAdmin ? "" : typeof it.check === "number" && it.check > 0 ? "Every " + it.check + " days · last checked " + (it.statusAt ? day(it.statusAt) : "never") +
-      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(it.statusAt).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) +  + " (change in Edit item)"
+      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(it.statusAt).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) + " (change in Edit item)"
       : kindOf(it) !== "Price only" ? "None; set one in Edit item → Check every (days)" : ""),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
@@ -819,8 +820,8 @@ function detail(it){
       var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
       tb.appendChild(h("tr", {class: o.hidden ? "dim" : null},
         h("td", {class: o.pref ? "pref" : ""}, S.canWrite
-          ? h("button", {class: "star", type: "button", disabled: o.pref || !o.oid, "aria-label": o.pref ? "Preferred vendor" : "Make " + (o.vendor || "this option") + " the preferred vendor",
-                         title: o.pref ? "Preferred vendor" : "Make this the preferred vendor", text: o.pref ? "★" : "☆", onclick: function(){ makePreferred(it, o); }})
+          ? h("button", {class: "star", type: "button", disabled: !o.oid, "aria-pressed": String(!!o.pref), "aria-label": (o.pref ? "Unstar " : "Star ") + (o.vendor || "this option"),
+                         title: o.pref ? "Starred (preferred). Click to unstar" : "Click to star as a preferred vendor", text: o.pref ? "★" : "☆", onclick: function(){ toggleStar(it, o); }})
           : (o.pref ? "★ " : ""), o.vendor || ""),
         h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
         h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
