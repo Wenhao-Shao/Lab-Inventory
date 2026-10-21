@@ -65,6 +65,7 @@ function onOpen() {
   var menu = SpreadsheetApp.getUi().createMenu('Lab inventory')
     .addItem('1. Set up tabs', 'setup')
     .addItem('2. Set passcodes', 'setPasscodes')
+    .addItem('Set admin passcode', 'setAdminPasscode')
     .addItem('Check status', 'status');
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
@@ -115,11 +116,26 @@ function setPasscodes() {
   ui.alert('Saved. Anyone already signed in with an old passcode will be asked to sign in again.');
 }
 
+/** A third passcode for whoever runs the routine check: it can do everything the edit passcode can, sees Due to check and sets check intervals. */
+function setAdminPasscode() {
+  var ui = SpreadsheetApp.getUi(), props = PropertiesService.getScriptProperties();
+  var a = ui.prompt('Admin passcode', 'For the PI and the Ordering Manager. It can edit, sees Due to check, and sets how often items are checked. At least 8 characters, different from the other two.', ui.ButtonSet.OK_CANCEL);
+  if (a.getSelectedButton() !== ui.Button.OK) return;
+  var v = a.getResponseText().trim();
+  if (v.length < 8 || v === props.getProperty('EDIT_PASSCODE') || v === props.getProperty('READ_PASSCODE')) {
+    ui.alert('Not saved. The admin passcode needs at least 8 characters and must differ from the edit and read passcodes.');
+    return;
+  }
+  props.setProperty('ADMIN_PASSCODE', v);
+  ui.alert('Saved. Sign in on the inventory page with this passcode to see Due to check.');
+}
+
 function status() {
   var ss = SpreadsheetApp.getActiveSpreadsheet(), props = PropertiesService.getScriptProperties();
   var items = ss.getSheetByName(TABS.items);
   alert_('Tabs: ' + (items ? 'ready, ' + Math.max(0, items.getLastRow() - 1) + ' items' : 'not set up') +
-    '\nPasscodes: ' + (props.getProperty('EDIT_PASSCODE') && props.getProperty('READ_PASSCODE') ? 'set' : 'not set'));
+    '\nPasscodes: ' + (props.getProperty('EDIT_PASSCODE') && props.getProperty('READ_PASSCODE') ? 'set' : 'not set') +
+    '\nAdmin passcode: ' + (props.getProperty('ADMIN_PASSCODE') ? 'set' : 'not set'));
 }
 
 function alert_(msg) { try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); } }
@@ -148,7 +164,8 @@ function handle_(body) {
   var props = PropertiesService.getScriptProperties();
   var edit = props.getProperty('EDIT_PASSCODE'), read = props.getProperty('READ_PASSCODE');
   if (!edit || !read) throw fail_('not_set_up', 'Passcodes have not been set in the spreadsheet.');
-  var pass = String(body.pass || ''), role = pass === edit ? 'edit' : pass === read ? 'read' : null;
+  var admin = props.getProperty('ADMIN_PASSCODE');
+  var pass = String(body.pass || ''), role = admin && pass === admin ? 'admin' : pass === edit ? 'edit' : pass === read ? 'read' : null;
   if (!role) { Utilities.sleep(1000); throw fail_('bad_passcode'); }
 
   var id = props.getProperty('SHEET_ID');
@@ -158,15 +175,15 @@ function handle_(body) {
   // A page that sends v >= 2 gets a short answer: only what changed after a save, and a compact table on load.
   var action = String(body.action || 'load'), extra = {}, lean = Number(body.v) >= 2, patch = null;
   if (action !== 'load') {
-    if (role !== 'edit') throw fail_('read_only');
+    if (role !== 'edit' && role !== 'admin') throw fail_('read_only');
     var user = text_(body.user, 40);
     if (!user) throw fail_('invalid', 'A name is required to make changes.');
     var lock = LockService.getScriptLock();
     try { lock.waitLock(20000); } catch (err) { throw fail_('busy'); }
     try {
       if (action === 'report') patch = report_(ss, body, user);
-      else if (action === 'addItem') { patch = addItem_(ss, body); extra.newId = patch.add.id; }
-      else if (action === 'updateItem') patch = updateItem_(ss, body);
+      else if (action === 'addItem') { patch = addItem_(ss, body, role); extra.newId = patch.add.id; }
+      else if (action === 'updateItem') patch = updateItem_(ss, body, role);
       else if (action === 'saveOption') patch = saveOption_(ss, body);
       else if (action === 'deleteOption') patch = deleteOption_(ss, body);
       else if (action === 'deleteItem') patch = deleteItem_(ss, body, user);
@@ -215,8 +232,9 @@ function report_(ss, body, user) {
            event: { at: when, item: String(body.itemId), name: cur.name, event: ev, by: user, note: note } };
 }
 
-function addItem_(ss, body) {
+function addItem_(ss, body, role) {
   var it = cleanItem_(body.item || {});
+  if (role !== 'admin') it.check = null;   // only the admin passcode sets routine checks
   if (!it.name || !it.cat) throw fail_('invalid', 'Name and category are required.');
   var items = ss.getSheetByName(TABS.items), pre = PREFIX[it.cat] || 'GEN';
   it.id = pre + '-' + ('00' + (maxNumber_(items, 1, pre + '-') + 1)).slice(-3);
@@ -237,7 +255,7 @@ function addItem_(ss, body) {
   return { add: added };
 }
 
-function updateItem_(ss, body) {
+function updateItem_(ss, body, role) {
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.id);
   if (!row) throw fail_('not_found');
   cols_(items, ITEM_COLS);
@@ -246,7 +264,12 @@ function updateItem_(ss, body) {
   var next = cleanItem_(body.fields || {});
   if (!next.name || !next.cat) throw fail_('invalid', 'Name and category are required.');
   var sent = body.fields || {};
-  ITEM_EDITABLE.forEach(function (k) { if ((k === 'level' || k === 'check') && sent[k] === undefined) return; cur[k] = next[k]; });   // an older page does not send these
+  ITEM_EDITABLE.forEach(function (k) {
+    if ((k === 'level' || k === 'check') && sent[k] === undefined) return;   // an older page does not send these
+    if (k === 'check' && role !== 'admin') return;                            // only the admin passcode sets routine checks
+    cur[k] = next[k];
+  });
+  // An edit never touches the report fields (status, statusAt, statusBy, statusNote), so it does not count as a check.
   kind_(cur);
   write_(items, row, [itemRow_(cur)], ITEM_TYPES);
   return { item: cur };
@@ -271,11 +294,13 @@ function saveOption_(ss, body) {
     o.checked = o.price == null ? '' : today_(ss);
   }
   if (o.pref) {
-    var last = opts.getLastRow();
+    // One read; a write only for the rows that still carry a star (usually one). Writing every row of a large item took seconds.
+    var last = opts.getLastRow(), pc = OPT_KEYS.indexOf('pref') + 1;
     if (last >= 2) {
-      var ids = opts.getRange(2, 2, last - 1, 1).getValues(), pc = OPT_KEYS.indexOf('pref') + 1;
-      for (var i = 0; i < ids.length; i++) {
-        if (String(ids[i][0]) === o.item && i + 2 !== row) opts.getRange(i + 2, pc).setValue(false);
+      var vals = opts.getRange(2, 2, last - 1, pc - 1).getValues();
+      for (var i = 0; i < vals.length; i++) {
+        var star = vals[i][pc - 2];
+        if (String(vals[i][0]) === o.item && i + 2 !== row && (star === true || String(star).toUpperCase() === 'TRUE')) opts.getRange(i + 2, pc).setValue(false);
       }
     }
   }
