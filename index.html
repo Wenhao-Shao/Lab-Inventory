@@ -330,14 +330,27 @@ function sizeKey(s){
   });
 }
 function natCmp(a, b){ return sizeKey(a).localeCompare(sizeKey(b), undefined, {numeric: true, sensitivity: "base"}); }
+/* Vendor rows and sizes: by the first amount in the text wherever it sits ("Brown 1.5ml" next to "2mL round"), then by name. */
+function firstSize(s){
+  var t = String(s || "").toLowerCase().replace(/(\d+(?:\.\d+)?)\s*[-–]\s*\d+(?:\.\d+)?\s*(µl|ul|ml|mi|mg|kg|mm|cm|l|g)(?![a-z])/g, "$1 $2");   // "10-15 mL" counts as 10 mL
+  var m = /(\d+(?:\.\d+)?)\s*(µl|ul|ml|mi|mg|kg|mm|cm|l|g)(?![a-z])/.exec(t);
+  return m ? {fam: m[2] === "mm" || m[2] === "cm" ? 1 : /g$/.test(m[2]) ? 2 : 0, val: parseFloat(m[1]) * UNIT_TO[m[2]]} : null;
+}
+function sizeCmp(a, b){
+  var x = firstSize(a), y = firstSize(b);
+  if (x && y && x.fam === y.fam && x.val !== y.val) return x.val - y.val;
+  if (x && !y) return -1; if (y && !x) return 1;
+  return natCmp(a, b);
+}
 function daysSince(s){ if (!s) return Infinity; var d = new Date(String(s).replace(" ", "T")); return isNaN(d) ? Infinity : (Date.now() - d) / 864e5; }
 /* Due to check: the item has a check interval and its last report (any report counts) is older than that, or there is none. */
 function isDue(it){ return typeof it.check === "number" && it.check > 0 && daysSince(it.statusAt) >= it.check; }
 /* The sizes an item holds, from its vendor rows (rows behind "More" only when there is nothing else). */
+/* The sizes to pick from when reporting: the grades of the rows the lab has (all rows when it has none), smallest first. */
 function sizesOf(it){
   var all = it.opts || [], vis = all.filter(function(o){ return !o.hidden; }), seen = [];
   (vis.length ? vis : all).forEach(function(o){ var g = String(o.grade || "").trim(); if (g && seen.indexOf(g) < 0) seen.push(g); });
-  return seen.sort(natCmp);
+  return seen.sort(sizeCmp);
 }
 function sizeField(it){ var z = sizesOf(it); return z.length > 1 ? {k: "size", label: "Which size", type: "select", options: [""].concat(z), blank: "Not one size in particular", wide: true} : null; }
 /* Web addresses become links named by their site ("amazon.com"). A vendor row can hold several, kept as "url ; url". */
@@ -824,7 +837,7 @@ function detail(it){
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
     fact("Source", it.source), fact("Notes", it.notes ? h("span", null, linkify(it.notes)) : ""), fact("Item code", h("span", {class: "mono", text: it.id}))));
-  var opts = (it.opts || []).slice().sort(function(a, b){ return natCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
+  var opts = (it.opts || []).slice().sort(function(a, b){ return sizeCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
   if (opts.length){
     var tb = h("tbody");
     opts.forEach(function(o){

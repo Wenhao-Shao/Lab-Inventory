@@ -73,6 +73,7 @@ function onOpen() {
   if (typeof applyChanges1021b === 'function') menu.addItem('7. Apply changes (21 Oct, part 2)', 'applyChanges1021b');
   if (typeof applyChanges1021c === 'function') menu.addItem('8. Apply changes (21 Oct, part 3)', 'applyChanges1021c');
   if (typeof applyChanges1021d === 'function') menu.addItem('9. Remove merge notes (21 Oct)', 'applyChanges1021d');
+  if (typeof applyChanges1022 === 'function') menu.addItem('10. Group centrifuge tubes (22 Oct)', 'applyChanges1022');
   menu.addToUi();
 }
 
