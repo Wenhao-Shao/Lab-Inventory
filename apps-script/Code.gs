@@ -17,11 +17,15 @@
  * check. The page lists items whose last report is older than this under "Due to check".
  * Item "Show": Main (listed by default), Price list (behind the price-list switch),
  * More (rows that were hidden in the overseas price list).
+ * Vendor option "Size": the grade / size category the row belongs to (rows with the same size are grouped). An item whose
+ * rows have sizes keeps its stock per size on the "Sizes" tab (status, count); its own status columns then hold a summary
+ * (the worst status of the sizes on show). The item's min level applies to each size. A size is on show when one of its
+ * rows is starred, or when it has no vendor row yet.
  *
  * The passcodes live in this script's properties, never in the web page.
  */
 
-var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events', reminders: 'Reminders' };
+var TABS = { items: 'Items', opts: 'Vendor options', events: 'Stock events', reminders: 'Reminders', sizes: 'Sizes' };
 
 var ITEM_COLS = ['Item ID', 'Name', 'Also called', 'CAS', 'Category', 'Location', 'Min level', 'Unit', 'Stocked',
   'Lead >2 wk', 'Has expiry', 'Required spec', 'Source', 'Notes', 'Status', 'Status date', 'Status by', 'Status note', 'Type', 'Show', 'Current level', 'Check every (days)'];
@@ -32,10 +36,16 @@ var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 
 var ITEM_KINDS = ['Stocked', 'On hand', 'Asset', 'Price only'];
 
 var OPT_COLS = ['Option ID', 'Item ID', 'Vendor', 'Catalog #', 'Grade', 'Pack size', 'Pack unit', 'Price ($)',
-  'Preferred', 'Price note', 'Alternative catalog #', 'Price checked on', 'Comment', 'Link', 'Hidden in price list', 'Times bought', 'Last bought'];
-var OPT_KEYS = ['oid', 'item', 'vendor', 'catalog', 'grade', 'pack', 'unit', 'price', 'pref', 'pnote', 'alt', 'checked', 'comment', 'link', 'hidden', 'bought', 'last'];
-var OPT_TYPES = ['t', 't', 't', 't', 't', 'n', 't', 'p', 'b', 't', 't', 't', 't', 't', 'b', 'n', 't'];
+  'Preferred', 'Price note', 'Alternative catalog #', 'Price checked on', 'Comment', 'Link', 'Hidden in price list', 'Times bought', 'Last bought', 'Size'];
+var OPT_KEYS = ['oid', 'item', 'vendor', 'catalog', 'grade', 'pack', 'unit', 'price', 'pref', 'pnote', 'alt', 'checked', 'comment', 'link', 'hidden', 'bought', 'last', 'size'];
+var OPT_TYPES = ['t', 't', 't', 't', 't', 'n', 't', 'p', 'b', 't', 't', 't', 't', 't', 'b', 'n', 't', 't'];
 var OPT_KEPT = ['hidden', 'bought', 'last'];   // set by the purchase records, not edited in the page
+
+// Stock per size: one row per item and size that has been reported on, or that was made without a vendor row.
+var SIZE_COLS = ['Item ID', 'Size', 'Status', 'Status date', 'Status by', 'Status note', 'Current level'];
+var SIZE_KEYS = ['item', 'size', 'status', 'statusAt', 'statusBy', 'statusNote', 'level'];
+var SIZE_TYPES = ['t', 't', 't', 't', 't', 't', 'n'];
+var STATUS_RANK = { 'Out': 6, 'Low': 5, 'Ordered': 4, 'OK': 3, 'No need': 2 };
 
 var EVENT_COLS = ['Date', 'Item ID', 'Item', 'Event', 'Reported by', 'Note'];
 var EVENT_TYPES = ['t', 't', 't', 't', 't', 't'];
@@ -74,6 +84,7 @@ function onOpen() {
   if (typeof applyChanges1021c === 'function') menu.addItem('8. Apply changes (21 Oct, part 3)', 'applyChanges1021c');
   if (typeof applyChanges1021d === 'function') menu.addItem('9. Remove merge notes (21 Oct)', 'applyChanges1021d');
   if (typeof applyChanges1022 === 'function') menu.addItem('10. Group centrifuge tubes (22 Oct)', 'applyChanges1022');
+  if (typeof applyChanges1028 === 'function') menu.addItem('11. Sizes for gloves, dropper bulb, PTFE filter paper (28 Oct)', 'applyChanges1028');
   menu.addToUi();
 }
 
@@ -193,6 +204,8 @@ function handle_(body) {
       else if (action === 'addReminder') patch = addReminder_(ss, body, user);
       else if (action === 'checkReminder') patch = checkReminder_(ss, body, user);
       else if (action === 'deleteReminder') patch = deleteReminder_(ss, body);
+      else if (action === 'addSize') patch = addSize_(ss, body);
+      else if (action === 'deleteSize') patch = deleteSize_(ss, body);
       else throw fail_('invalid', 'Unknown action.');
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
@@ -200,7 +213,7 @@ function handle_(body) {
   }
   if (lean) return Object.assign({ ok: true, role: role }, compact_(ss));
   var data = readAll_(ss);
-  return Object.assign({ ok: true, role: role, items: data.items, events: data.events, reminders: reminders_(ss) }, extra);
+  return Object.assign({ ok: true, role: role, items: data.items, events: data.events, reminders: reminders_(ss), sizes: sizes_(ss) }, extra);
 }
 
 /* --------------------------------------------------------------- actions */
@@ -225,14 +238,74 @@ function report_(ss, body, user) {
     var qty = num_(body.qty), qunit = text_(body.qunit, 16);
     if (qty != null) note = 'Ordered ' + amount(qty, qunit);
   }
-  var size = text_(body.size, 80);   // which size of an item that holds several, when the reporter picked one
+  var size = text_(body.size, 80);   // the size's name, written at the start of the note
   if (size) note = size + (note ? ' · ' + note : '');
+  if (body.sized && body.sizeKey != null) return sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note);
   append_(ss.getSheetByName(TABS.events), [when, String(body.itemId), cur.name, ev, user, note], EVENT_TYPES);
   write_(items, row, [[status, when, user, note]], ['t', 't', 't', 't'], ITEM_KEYS.indexOf('status') + 1);
   if (level !== cur.level) write_(items, row, [[level == null ? '' : level]], ['n'], ITEM_KEYS.indexOf('level') + 1);
   if (unit !== cur.unit) write_(items, row, [[unit]], ['t'], ITEM_KEYS.indexOf('unit') + 1);
   return { item: { id: String(body.itemId), status: status, statusAt: when, statusBy: user, statusNote: note, level: level, unit: unit },
            event: { at: when, item: String(body.itemId), name: cur.name, event: ev, by: user, note: note } };
+}
+
+/** A report on one size of an item that has sizes: the size's own stock row changes, and the item's status columns get the
+ *  worst status of the sizes on show (Out, Low, Ordered, OK, No need). The note in the stock event names the size. */
+function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note) {
+  var id = String(body.itemId), key = text_(body.sizeKey, 80), sh = tab_(ss, TABS.sizes, SIZE_COLS, SIZE_TYPES);
+  var all = sizeRows_(sh), mine = all.filter(function (r) { return r.item === id; });
+  var srow = mine.filter(function (r) { return r.size === key; })[0];
+  var opts = rows_(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES).filter(function (o) { return o.item === id; });
+  // Rows without a size held the item's own stock until now: keep that stock under their (unnamed) size.
+  if (key !== '' && !mine.some(function (r) { return r.size === ''; }) && opts.some(function (o) { return !o.size; }) && cur.status) {
+    var keepRow = { item: id, size: '', status: cur.status, statusAt: cur.statusAt, statusBy: cur.statusBy, statusNote: cur.statusNote, level: cur.level };
+    append_(sh, toRow_(keepRow, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES); keepRow._row = sh.getLastRow(); mine.push(keepRow);
+  }
+  var level = srow ? srow.level : null;
+  if (ev === 'Out') level = 0;
+  else if (ev === 'Low' || ev === 'Stock') { if (given != null) level = given; }
+  if (ev === 'Stock') status = given === 0 ? 'Out' : (cur.min != null && given < cur.min ? 'Low' : 'OK');
+  var bare = note.indexOf(' · ') >= 0 && text_(body.size, 80) ? note.slice(note.indexOf(' · ') + 3) : (text_(body.size, 80) ? '' : note);
+  var next = { item: id, size: key, status: status, statusAt: when, statusBy: user, statusNote: bare, level: level };
+  if (srow) write_(sh, srow._row, [toRow_(next, SIZE_KEYS, SIZE_TYPES)], SIZE_TYPES);
+  else { append_(sh, toRow_(next, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES); mine.push(next); }
+  mine = mine.map(function (r) { return r.size === key ? next : r; });
+  append_(ss.getSheetByName(TABS.events), [when, id, cur.name, ev, user, note], EVENT_TYPES);
+  // The item's own status: the worst of the sizes on show (a size is on show when a row of it is starred or it has no rows).
+  var anyStar = opts.some(function (o) { return o.pref; }), shown = {};
+  opts.forEach(function (o) { if (o.pref || !anyStar) shown[o.size || ''] = true; });
+  mine.forEach(function (r) { if (!opts.some(function (o) { return (o.size || '') === r.size; })) shown[r.size] = true; });
+  var worst = '', parts = [];
+  mine.forEach(function (r) {
+    if (!shown[r.size] || !r.status) return;
+    if (!worst || (STATUS_RANK[r.status] || 0) > (STATUS_RANK[worst] || 0)) worst = r.status;
+    parts.push((r.size || 'other') + ': ' + r.status + (typeof r.level === 'number' ? ' ' + r.level + (cur.unit ? ' ' + cur.unit : '') : ''));
+  });
+  var sumNote = parts.join('; ').slice(0, 300);
+  write_(items, row, [[worst || status, when, user, sumNote]], ['t', 't', 't', 't'], ITEM_KEYS.indexOf('status') + 1);
+  if (unit !== cur.unit) write_(items, row, [[unit]], ['t'], ITEM_KEYS.indexOf('unit') + 1);
+  var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = next[k]; });
+  return { item: { id: id, status: worst || status, statusAt: when, statusBy: user, statusNote: sumNote, unit: unit }, sizeRow: sent,
+           event: { at: when, item: id, name: cur.name, event: ev, by: user, note: note } };
+}
+
+/** Makes a size that has no vendor row yet (for example gloves size L), so it shows and can be reported on. */
+function addSize_(ss, body) {
+  var id = String(body.itemId || ''), key = text_(body.size, 80);
+  if (!key) throw fail_('invalid', 'Name the size first.');
+  if (!findRow_(ss.getSheetByName(TABS.items), 1, id)) throw fail_('not_found');
+  var sh = tab_(ss, TABS.sizes, SIZE_COLS, SIZE_TYPES);
+  var have = sizeRows_(sh).filter(function (r) { return r.item === id && r.size === key; })[0];
+  var r = have || { item: id, size: key, status: '', statusAt: '', statusBy: '', statusNote: '', level: null };
+  if (!have) append_(sh, toRow_(r, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES);
+  var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = r[k]; });
+  return { sizeRow: sent };
+}
+/** Removes a size's stock row. Its vendor rows, if any, keep their size name. */
+function deleteSize_(ss, body) {
+  var id = String(body.itemId || ''), key = text_(body.size, 80), sh = ss.getSheetByName(TABS.sizes);
+  if (sh) sizeRows_(sh).filter(function (r) { return r.item === id && r.size === key; }).reverse().forEach(function (r) { sh.deleteRow(r._row); });
+  return { delSize: { item: id, size: key } };
 }
 
 function addItem_(ss, body, role) {
@@ -250,7 +323,7 @@ function addItem_(ss, body, role) {
   if (body.opt && (body.opt.vendor || body.opt.catalog)) {
     var o = cleanOpt_(body.opt), opts = ss.getSheetByName(TABS.opts);
     o.oid = nextOid_(opts); o.item = it.id; o.pref = true; o.alt = '';
-    o.link = o.link || ''; o.hidden = false; o.bought = null; o.last = '';
+    o.link = o.link || ''; o.size = o.size || ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
     cols_(opts, OPT_COLS);
     append_(opts, optRow_(o), OPT_TYPES);
@@ -292,10 +365,12 @@ function saveOption_(ss, body) {
     o.oid = old.oid; o.alt = old.alt;
     OPT_KEPT.forEach(function (k) { o[k] = old[k]; });
     if (o.link === undefined) o.link = old.link;   // a page from before 21 Oct does not send the link
+    if (o.size === undefined) o.size = old.size;   // nor, before 28 Oct, the size
     o.checked = o.price != null && o.price !== old.price ? today_(ss) : old.checked;
   } else {
-    o.oid = nextOid_(opts); o.alt = ''; o.link = o.link || ''; o.hidden = false; o.bought = null; o.last = '';
+    o.oid = nextOid_(opts); o.alt = ''; o.link = o.link || ''; o.size = o.size || ''; o.hidden = false; o.bought = null; o.last = '';
     o.checked = o.price == null ? '' : today_(ss);
+    cols_(opts, OPT_COLS);
   }
   // Several vendor rows of one item can be starred (21 Oct 2026), so a star here leaves the other rows alone.
   if (row) write_(opts, row, [optRow_(o)], OPT_TYPES); else append_(opts, optRow_(o), OPT_TYPES);
@@ -318,11 +393,14 @@ function deleteItem_(ss, body, user) {
     var dop = tab_(ss, 'Deleted vendor options', OPT_COLS.concat(['Deleted on', 'Deleted by']), OPT_TYPES.concat(['t', 't']));
     for (var i = vals.length - 1; i >= 0; i--) {
       if (String(vals[i][1]) !== id) continue;
-      append_(dop, optRow_(fromRow_(vals[i], OPT_KEYS, OPT_TYPES)).concat([when, user]), OPT_TYPES.concat(['t', 't']));
+      var drow = optRow_(fromRow_(vals[i], OPT_KEYS, OPT_TYPES));   // the deleted tab keeps its old columns; the size goes after "Deleted by"
+      append_(dop, drow.slice(0, 17).concat([when, user, drow[17]]), OPT_TYPES.slice(0, 17).concat(['t', 't', 't']));
       opts.deleteRow(i + 2);
     }
   }
   items.deleteRow(row);
+  var szs = ss.getSheetByName(TABS.sizes);
+  if (szs) sizeRows_(szs).filter(function (r) { return r.item === id; }).reverse().forEach(function (r) { szs.deleteRow(r._row); });
   return { delItem: id };
 }
 
@@ -378,6 +456,19 @@ function readAll_(ss) {
   return { items: items, events: events_(ss) };
 }
 
+function sizes_(ss) {
+  var sh = ss.getSheetByName(TABS.sizes);
+  return sh ? sizeRows_(sh).map(function (r) { delete r._row; return r; }) : [];
+}
+/** The Sizes tab's rows, each with its sheet row number in _row. */
+function sizeRows_(sh) {
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  return sh.getRange(2, 1, last - 1, SIZE_KEYS.length).getValues().map(function (r, i) {
+    var o = fromRow_(r, SIZE_KEYS, SIZE_TYPES); o._row = i + 2; return o;
+  }).filter(function (r) { return r.item; });
+}
+
 function events_(ss) {
   var events = [], es = ss.getSheetByName(TABS.events);
   if (es && es.getLastRow() >= 2) {
@@ -399,7 +490,8 @@ function compact_(ss) {
     return out;
   }
   return { compact: true, ikeys: ITEM_KEYS, okeys: OPT_KEYS, items: table(ss.getSheetByName(TABS.items), ITEM_KEYS, ITEM_TYPES),
-           opts: table(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES), events: events_(ss), reminders: reminders_(ss) };
+           opts: table(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES), events: events_(ss), reminders: reminders_(ss),
+           skeys: SIZE_KEYS, sizes: sizes_(ss).map(function (r) { return SIZE_KEYS.map(function (k) { return r[k]; }); }) };
 }
 
 /** A vendor option as the page expects it: every field except the item it belongs to. */
@@ -453,7 +545,7 @@ function kind_(it) {
 function cleanOpt_(f) {
   return { vendor: text_(f.vendor, 80), catalog: text_(f.catalog, 60), grade: text_(f.grade, 160), pack: num_(f.pack),
     unit: text_(f.unit, 16), price: num_(f.price), pref: !!f.pref, pnote: text_(f.pnote, 160), comment: text_(f.comment, 800),
-    link: f.link === undefined ? undefined : links_(f.link) };
+    link: f.link === undefined ? undefined : links_(f.link), size: f.size === undefined ? undefined : text_(f.size, 80) };
 }
 /** One or more web addresses, kept as "url ; url". Anything that is not an http(s) address is dropped. */
 function links_(v) {

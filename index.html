@@ -93,6 +93,11 @@ button.group:hover{color:var(--ink)}
 .st .pill{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .st.isdue .pill{font-family:var(--display);font-size:11.5px;padding:2px 2px}
 .st .pill.Due{flex:0 0 auto;color:var(--low);background:transparent;border:1px solid var(--low);padding:1px 4px}
+.sizerow td{background:var(--sunk);padding:7px 10px}
+.sizehead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.sizehead .sz{font-weight:600;min-width:2.5em}
+.sizehead .acts{margin-left:auto;gap:6px}
+.btn.toggle{margin-top:8px}
 .pill.NoNeed{color:var(--none);background:var(--none-bg)}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
@@ -244,7 +249,8 @@ function chem(name){
 
 /* ---------- state ---------- */
 var S = { items: [], events: [], reminders: [], showDone: false, collapsed: null, loaded: false, name: "", pass: "", role: null, canWrite: false,
-          tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "more", open: null, dead: null, locked: false, lastLoad: 0 };
+          tab: "items", q: "", status: "all", cat: "all", kind: "all", scope: "more", open: null, dead: null, locked: false, lastLoad: 0,
+          sizeRows: [], sizeIdx: {}, showAll: {} };
 var KEY = "shaoLabInventory";
 var DEMO = false;
 var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solvents","General solids","General acids & bases","NMR solvents","PVSK reagents","Research chemicals",
@@ -263,13 +269,15 @@ function pillOf(s){ return s === "No need" ? "NoNeed" : s; }
 function evLabel(ev){ return ev === "Stock" ? "Stock count" : ev === "OK" ? "Checked" : ev; }
 function hasLevel(it){ return typeof it.level === "number"; }
 function amount(n, unit){ return n + (unit ? " " + unit : ""); }
-/* What a report does to an item. The Sheet script applies the same rules; its answer replaces this one. */
-function outcome(it, ev, d){
-  var unit = it.unit || d.unit || "", o = {status: STATUS_OF[ev], level: hasLevel(it) ? it.level : null, unit: unit, note: ""};
+/* What a report does to an item's size (cur holds that size's stock). The Sheet script applies the same rules; its answer replaces this one. */
+function outcome(it, ev, d, cur){
+  cur = cur || it;
+  var unit = it.unit || d.unit || "", o = {status: STATUS_OF[ev], level: typeof cur.level === "number" ? cur.level : null, unit: unit, note: ""};
   if (ev === "Out") o.level = 0;
   else if (ev === "Low"){ if (d.level != null){ o.level = d.level; o.note = amount(d.level, unit) + " left"; } }
   else if (ev === "Stock"){ o.level = d.level; o.note = amount(d.level, unit); o.status = d.level === 0 ? "Out" : (typeof it.min === "number" && d.level < it.min ? "Low" : "OK"); }
   else if (ev === "Ordered"){ if (d.qty != null) o.note = "Ordered " + amount(d.qty, d.qunit || ""); }
+  o.bare = o.note;
   if (d.size) o.note = d.size + (o.note ? " · " + o.note : "");
   return o;
 }
@@ -303,7 +311,50 @@ function day(s){
   var d = new Date(s.replace(" ", "T")); if (isNaN(d)) return s;
   return d.toLocaleDateString(undefined, {month:"short", day:"numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric"});
 }
-function statusOf(it){ return it.status || "None"; }
+/* ---------- grade / size categories ----------
+   A vendor row's "size" names its category; rows with the same size are grouped. Rows without one form the item's
+   unnamed category, labelled with its starred row's grade. Each size has its own stock (status, count): named sizes on the
+   Sizes tab, the unnamed one in the item's own status fields until sizes are reported on. The item's minimum level
+   applies to each size. A row shows when it is starred; a size shows when one of its rows is starred or it has no rows
+   (a size made for later, such as gloves L). An item with no starred row shows everything. */
+var RANK = {Out: 6, Low: 5, Ordered: 4, OK: 3, "No need": 2};
+function indexSizes(){ var x = {}; (S.sizeRows || []).forEach(function(r){ (x[r.item] = x[r.item] || {})[r.size] = r; }); S.sizeIdx = x; }
+function sized(it){ var idx = S.sizeIdx[it.id]; return (it.opts || []).some(function(o){ return o.size; }) || !!(idx && Object.keys(idx).length); }
+function stockOf(it, key){
+  var idx = S.sizeIdx[it.id] || {}, row = idx[key];
+  if (row) return row;
+  if (key === "" && !Object.keys(idx).some(function(k){ return idx[k].statusAt; })) return it;   /* nothing reported per size yet: the item's own stock */
+  return {};
+}
+function groupsOf(it){
+  if (it._g) return it._g;
+  var opts = it.opts || [], anyStar = opts.some(function(o){ return o.pref; }), map = {}, keys = [];
+  function add(k){ if (!map[k]){ map[k] = {key: k, rows: []}; keys.push(k); } return map[k]; }
+  opts.forEach(function(o){ add(String(o.size || "").trim()).rows.push(o); });
+  Object.keys(S.sizeIdx[it.id] || {}).forEach(function(k){ if (k !== "" || map[""]) add(k); });
+  if (!keys.length) add("");
+  var gs = keys.map(function(k){
+    var g = map[k], st = g.rows.filter(function(o){ return o.pref; });
+    g.stock = stockOf(it, k);
+    g.shown = !anyStar || !g.rows.length || st.length > 0;
+    g.label = k || (keys.length > 1 ? "Rows without a size" : ((st[0] || g.rows[0] || {}).grade || ""));
+    return g;
+  });
+  gs.sort(function(a, b){ return a.key === "" ? -1 : b.key === "" ? 1 : sizeCmp(a.key, b.key); });
+  return (it._g = gs);
+}
+function shownGroups(it){ return groupsOf(it).filter(function(g){ return g.shown; }); }
+function stStatus(st){ var s = st && st.status; return s ? (STATUS_OF[s] || s) : "None"; }
+function statusOf(it){
+  var best = null;
+  shownGroups(it).forEach(function(g){ var s = stStatus(g.stock); if (RANK[s] && (!best || RANK[s] > RANK[best])) best = s; });
+  return best || "None";
+}
+/* The best vendor row to order a size from: its starred row bought most recently, else its first starred row, else the item's. */
+function bestIn(it, g){
+  var st = g.rows.filter(function(o){ return o.pref; }); if (!st.length) return g.rows.length ? (g.rows.filter(function(o){ return o.last; })[0] || g.rows[0]) : bestOf(it);
+  return st.filter(function(o){ return o.last; }).sort(function(a, b){ return String(b.last).localeCompare(String(a.last)); })[0] || st[0];
+}
 function statusLabel(s){ return s === "None" ? "No report" : s; }
 function hay(it){
   var p = [it.id, it.name, it.aka, it.cas, it.cat, it.loc, it.spec, it.source, it.notes, kindOf(it)];
@@ -343,16 +394,9 @@ function sizeCmp(a, b){
   return natCmp(a, b);
 }
 function daysSince(s){ if (!s) return Infinity; var d = new Date(String(s).replace(" ", "T")); return isNaN(d) ? Infinity : (Date.now() - d) / 864e5; }
-/* Due to check: the item has a check interval and its last report (any report counts) is older than that, or there is none. */
-function isDue(it){ return typeof it.check === "number" && it.check > 0 && daysSince(it.statusAt) >= it.check; }
-/* The sizes an item holds, from its vendor rows (rows behind "More" only when there is nothing else). */
-/* The sizes to pick from when reporting: the grades of the rows the lab has (all rows when it has none), smallest first. */
-function sizesOf(it){
-  var all = it.opts || [], vis = all.filter(function(o){ return !o.hidden; }), seen = [];
-  (vis.length ? vis : all).forEach(function(o){ var g = String(o.grade || "").trim(); if (g && seen.indexOf(g) < 0) seen.push(g); });
-  return seen.sort(sizeCmp);
-}
-function sizeField(it){ var z = sizesOf(it); return z.length > 1 ? {k: "size", label: "Which size", type: "select", options: [""].concat(z), blank: "Not one size in particular", wide: true} : null; }
+/* Due to check: the item has a check interval and a size on show whose last report (any report counts) is older than that, or that has none. */
+function isDue(it){ return typeof it.check === "number" && it.check > 0 && shownGroups(it).some(function(g){ return daysSince(g.stock.statusAt) >= it.check; }); }
+function oldestCheck(it){ var gs = shownGroups(it), o; for (var i = 0; i < gs.length; i++){ var a = gs[i].stock.statusAt || ""; if (!a) return ""; if (o === undefined || a < o) o = a; } return o || ""; }
 /* Web addresses become links named by their site ("amazon.com"). A vendor row can hold several, kept as "url ; url". */
 var URL_RE = /https?:\/\/[^\s;"'<>]+/gi;
 function linkList(v){ var us = String(v || "").match(URL_RE) || []; return us.filter(function(u, i){ return us.indexOf(u) === i; }); }
@@ -404,6 +448,12 @@ function applyPatch(p, ctx){
     if (ri >= 0) S.reminders[ri] = p.reminder; else S.reminders.push(p.reminder);
   }
   if (p.delReminder) S.reminders = S.reminders.filter(function(r){ return r.rid !== p.delReminder; });
+  if (p.sizeRow){
+    var si = -1; S.sizeRows.forEach(function(r, i){ if (r.item === p.sizeRow.item && r.size === p.sizeRow.size) si = i; });
+    if (si >= 0) S.sizeRows[si] = Object.assign(S.sizeRows[si], p.sizeRow); else S.sizeRows.push(p.sizeRow);
+    indexSizes();
+  }
+  if (p.delSize){ S.sizeRows = S.sizeRows.filter(function(r){ return !(r.item === p.delSize.item && r.size === p.delSize.size); }); indexSizes(); }
   if (p.delOpt) S.items.forEach(function(i){ var n = i.opts.length; i.opts = i.opts.filter(function(o){ return o.oid !== p.delOpt; }); if (i.opts.length !== n) delete i._hay; });
 }
 /* A copy of the last load is kept in this browser so the list opens at once; it is refreshed from the Sheet right after. */
@@ -412,7 +462,7 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders}, function(k, v){ return k === "_hay" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
@@ -428,7 +478,11 @@ function api(action, payload, ctx){
       if (!d || !d.ok) throw (d || {error: "network"});
       setRole(d.role);
       if (d.patch) applyPatch(d.patch, ctx);
-      else { S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now(); }
+      else {
+        S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now();
+        S.sizeRows = d.skeys ? (d.sizes || []).map(function(r){ var o = {}; d.skeys.forEach(function(k, i){ o[k] = r[i]; }); return o; }) : (d.sizes || []);
+        indexSizes();
+      }
       S.loaded = true; S.dead = null; saveCache();
       sync("Updated " + new Date().toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"}));
       render();
@@ -515,16 +569,37 @@ function save(action, payload, done){
   return enqueue(function(){ return api(action, payload); }).then(function(d){ toast(done); return d; }, function(e){ $("toast").hidden = true; sync("Not saved"); throw e; });
 }
 function stamp(){ var d = new Date(), z = function(n){ return ("0" + n).slice(-2); }; return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + " " + z(d.getHours()) + ":" + z(d.getMinutes()); }
-/* A report shows on the page at once and is saved in the background. If the save fails, the page goes back to what it showed before. */
+/* A report shows on the page at once and is saved in the background. If the save fails, the page goes back to what it showed before.
+   d.g is the size it is about; without one it is the item's only size on show. */
+function localSize(it, key){
+  var idx = S.sizeIdx[it.id] || {};
+  if (idx[key]) return {row: idx[key], made: false};
+  var row = {item: it.id, size: key, status: "", statusAt: "", statusBy: "", statusNote: "", level: null};
+  S.sizeRows.push(row); indexSizes(); return {row: row, made: true};
+}
 function report(it, ev, d){
   d = d || {};
-  var before = {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote, level: it.level, unit: it.unit}, now = stamp(), oc = outcome(it, ev, d);
+  var g = d.g || shownGroups(it)[0] || groupsOf(it)[0], key = g ? g.key : "", useSize = sized(it), made = [];
+  var target = it;
+  if (useSize){
+    /* Rows without a size kept the item's own stock until now; the Sheet keeps it under their unnamed size, and so does this page. */
+    var idx = S.sizeIdx[it.id] || {};
+    if (key !== "" && !idx[""] && (it.opts || []).some(function(o){ return !o.size; }) && it.status){
+      var keepRow = localSize(it, ""); Object.assign(keepRow.row, {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote, level: it.level}); made.push(keepRow.row);
+    }
+    var ls = localSize(it, key); target = ls.row; if (ls.made) made.push(ls.row);
+  }
+  var label = useSize && g ? g.label : "";
+  var before = {status: target.status, statusAt: target.statusAt, statusBy: target.statusBy, statusNote: target.statusNote, level: target.level, unit: it.unit}, now = stamp();
+  var oc = outcome(it, ev, Object.assign({}, d, {size: label}), target);
   var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note};
-  Object.assign(it, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: oc.note, level: oc.level, unit: oc.unit}); S.events.unshift(le);
+  Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); it.unit = oc.unit; S.events.unshift(le);
   render(); sync("Saving…");
-  toast(ev === "Stock" ? it.name + ": " + oc.note + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : it.name + " marked " + ev.toLowerCase());
-  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: d.size || "", note: ""}, {localEvent: le}); }).catch(function(e){
-    var cur = itemById(it.id); if (cur) Object.assign(cur, before);
+  var who = it.name + (label ? " (" + label + ")" : "");
+  toast(ev === "Stock" ? who + ": " + oc.bare + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : who + " marked " + ev.toLowerCase());
+  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: label, sized: useSize, sizeKey: key, note: ""}, {localEvent: le}); }).catch(function(e){
+    Object.assign(target, {status: before.status, statusAt: before.statusAt, statusBy: before.statusBy, statusNote: before.statusNote, level: before.level}); it.unit = before.unit;
+    if (made.length){ S.sizeRows = S.sizeRows.filter(function(r){ return made.indexOf(r) < 0; }); indexSizes(); }
     var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
     sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
   });
@@ -590,41 +665,65 @@ function renderReminders(){
   v.appendChild(p);
 }
 
-/* The three reports that ask for a number. The unit is the item's own; it is asked for only when the item has none yet. */
+/* The reports that ask for a number. The unit is the item's own; it is asked for only when the item has none yet.
+   g is the size reported on; its name goes in the form's title when the item has sizes. */
 function unitField(it, k){ return {k: k, label: it.unit ? "Unit (set on the item)" : "Unit", list: UNITS.filter(Boolean), readonly: !!it.unit}; }
-function withSize(it, fields){ var z = sizeField(it); return z ? [z].concat(fields) : fields; }
-function askLow(it){
-  openSheet(it.name + " is low", withSize(it, [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")]),
-    {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit, size: v.size}); });
+function onlyGroup(it, g){ return g || shownGroups(it)[0] || groupsOf(it)[0]; }
+function whoOf(it, g){ return it.name + (sized(it) && g && g.label ? " — " + g.label : ""); }
+function askLow(it, g){
+  g = onlyGroup(it, g);
+  openSheet(whoOf(it, g) + " is low", [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")],
+    {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit, g: g}); });
 }
-/* What the last Ordered report said was ordered ("Ordered 2 box"), while the item is still marked Ordered. */
-function onOrder(it){
-  if (statusOf(it) !== "Ordered") return null;
-  var m = /Ordered (\d+(?:\.\d+)?)(?: ([^·]+?))?\s*(?:·|$)/.exec(it.statusNote || "");
+/* What the last Ordered report on a size said was ordered ("Ordered 2 box"), while that size is still marked Ordered. */
+function onOrder(st){
+  if (stStatus(st) !== "Ordered") return null;
+  var m = /Ordered (\d+(?:\.\d+)?)(?: ([^·]+?))?\s*(?:·|$)/.exec(st.statusNote || "");
   return m ? {qty: Number(m[1]), unit: (m[2] || "").trim()} : {qty: null, unit: ""};
 }
-function askStock(it){
-  var o = onOrder(it), start = hasLevel(it) ? it.level : null, unit = it.unit || "", fields = [];
+function askStock(it, g){
+  g = onlyGroup(it, g);
+  var st = g ? g.stock : it, has = typeof st.level === "number", o = onOrder(st), start = has ? st.level : null, unit = it.unit || "", fields = [];
   if (o){
     var fits = o.qty != null && (!o.unit || !it.unit || o.unit === it.unit);
-    if (fits){ start = Math.round(((hasLevel(it) ? it.level : 0) + o.qty) * 1000) / 1000; unit = it.unit || o.unit; }
-    fields.push({note: (o.qty != null ? "Ordered " + amount(o.qty, o.unit) : "Marked ordered") + (it.statusAt ? " on " + day(it.statusAt) : "") +
-      (hasLevel(it) ? "; the last count was " + amount(it.level, it.unit) : "") +
+    if (fits){ start = Math.round(((has ? st.level : 0) + o.qty) * 1000) / 1000; unit = it.unit || o.unit; }
+    fields.push({note: (o.qty != null ? "Ordered " + amount(o.qty, o.unit) : "Marked ordered") + (st.statusAt ? " on " + day(st.statusAt) : "") +
+      (has ? "; the last count was " + amount(st.level, it.unit) : "") +
       (fits ? ". Filled in " + amount(start, unit) + ": correct it if the delivery or the shelf is different." : ". Count what is on the shelf now, including the delivery.")});
   }
-  openSheet((o ? "Order arrived: stock of " : "Stock of ") + it.name, withSize(it, fields.concat([{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")])),
-    {unit: unit, level: start}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit, size: v.size}); });
+  openSheet((o ? "Order arrived: stock of " : "Stock of ") + whoOf(it, g), fields.concat([{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")]),
+    {unit: unit, level: start}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit, g: g}); });
 }
-function askOrdered(it){
-  var p = bestOf(it);
-  openSheet("Ordered " + it.name, withSize(it, [{k: "qty", label: "How many were ordered", type: "number"}, {k: "qunit", label: "Unit", list: UNITS.filter(Boolean)}]),
-    {qunit: it.unit || (p && p.unit) || ""}, function(v){ report(it, "Ordered", {qty: v.qty, qunit: v.qunit, size: v.size}); });
+function askOrdered(it, g){
+  g = onlyGroup(it, g);
+  var p = g ? bestIn(it, g) : bestOf(it);
+  openSheet("Ordered " + whoOf(it, g), [{k: "qty", label: "How many were ordered", type: "number"}, {k: "qunit", label: "Unit", list: UNITS.filter(Boolean)}],
+    {qunit: it.unit || (p && p.unit) || ""}, function(v){ report(it, "Ordered", {qty: v.qty, qunit: v.qunit, g: g}); });
 }
-/* Out is one click, unless the item holds several sizes: then it asks which. */
-function askOut(it){
-  var z = sizeField(it);
-  if (!z) return report(it, "Out");
-  openSheet(it.name + " is out", [z], {}, function(v){ report(it, "Out", {size: v.size}); });
+function askOut(it, g){ report(it, "Out", {g: onlyGroup(it, g)}); }
+/* A size made without a vendor row (for example gloves L), so it shows and can be reported on. */
+function addSize(it){
+  openSheet("Add a size to " + it.name, [{k: "size", label: "Size or grade (e.g. L, 25 mm, latex)", req: true, wide: true},
+    {note: "The size shows at once, ready for reports. To give it a vendor row, add one and pick this size."}], {}, function(v){
+    var key = String(v.size || "").trim(); if (!key) return;
+    var ls = localSize(it, key); render(); toast("Added the size " + key + " to " + it.name); sync("Saving…");
+    enqueue(function(){ return api("addSize", {itemId: it.id, size: key}); }).catch(function(e){
+      if (ls.made){ S.sizeRows = S.sizeRows.filter(function(r){ return r !== ls.row; }); indexSizes(); }
+      sync("Not saved"); render(); toast("Not saved: " + problem(e), 9000);
+    });
+  });
+}
+function removeSize(it, g){
+  var row = (S.sizeIdx[it.id] || {})[g.key]; if (!row) return;
+  S.sizeRows = S.sizeRows.filter(function(r){ return r !== row; }); indexSizes(); render(); toast("Removed the size " + g.key); sync("Saving…");
+  enqueue(function(){ return api("deleteSize", {itemId: it.id, size: g.key}); }).catch(function(e){
+    S.sizeRows.push(row); indexSizes(); sync("Not saved"); render(); toast("Not removed: " + problem(e), 9000);
+  });
+}
+function addItemReminder(it){
+  openSheet("Reminder about " + it.name, [{k: "text", label: "Reminder", req: true, wide: true}], {text: it.name + ": "}, function(v){
+    var t = String(v.text || "").trim(); if (!t) return; addReminder(t); toast("Added to Reminders");
+  });
 }
 
 /* ---------- sign-in ---------- */
@@ -703,7 +802,7 @@ function openSheet(title, fields, values, onSave, extra){
   var first = form.querySelector("input:not([readonly]),select,textarea"); if (first){ first.focus(); if (first.select && first.type === "number") first.select(); }
 }
 var UNITS = ["","L","mL","g","kg","box","bag","pack","pc","piece","roll","set","other"];
-function itemFields(adding){
+function itemFields(adding, sizedItem){
   var cats = CAT_ORDER.slice(); S.items.forEach(function(it){ if (it.cat && cats.indexOf(it.cat) < 0) cats.push(it.cat); });
   var locs = []; S.items.forEach(function(it){ if (it.loc && locs.indexOf(it.loc) < 0) locs.push(it.loc); });
   var f = [
@@ -722,16 +821,21 @@ function itemFields(adding){
     {k: "notes", label: "Notes", type: "area", wide: true}
   ];
   if (S.isAdmin) f.splice(f.map(function(x){ return x.k; }).indexOf("level") + 1, 0, {k: "check", label: "Check every (days); empty = no routine check", type: "number"});
+  if (sizedItem){
+    f = f.filter(function(x){ return x.k !== "level"; });   /* each size keeps its own count; report it on the size */
+    f.forEach(function(x){ if (x.k === "min") x.label = "Minimum level (applies to each size)"; });
+  }
   if (adding) f = f.concat([{head: "Where to buy it (optional)"}].concat(optFields("o_").filter(function(x){ return x.k !== "o_pref"; })));
   return f;
 }
-function optFields(p){
+function optFields(p, sizeNames){
   p = p || "";
   var vendors = []; S.items.forEach(function(it){ (it.opts || []).forEach(function(o){ if (o.vendor && vendors.indexOf(o.vendor) < 0) vendors.push(o.vendor); }); });
   return [
     {k: p + "vendor", label: "Vendor", req: !p, list: vendors},
     {k: p + "catalog", label: "Catalog number"},
     {k: p + "grade", label: "Grade, size or spec"},
+    {k: p + "size", label: "Size category (rows with the same one are grouped; type a new one to start it)", list: sizeNames || []},
     {k: p + "pack", label: "Pack size", type: "number"},
     {k: p + "unit", label: "Pack unit", type: "select", options: UNITS},
     {k: p + "price", label: "Price ($)", type: "number"},
@@ -744,7 +848,8 @@ function optFields(p){
 function optFrom(v, p){
   p = p || "";
   return { vendor: v[p + "vendor"], catalog: v[p + "catalog"], grade: v[p + "grade"], pack: v[p + "pack"], unit: v[p + "unit"],
-           price: v[p + "price"], pref: !!v[p + "pref"], pnote: v[p + "pnote"], comment: v[p + "comment"], link: linkList(v[p + "link"]).join(" ; ") };
+           price: v[p + "price"], pref: !!v[p + "pref"], pnote: v[p + "pnote"], comment: v[p + "comment"], link: linkList(v[p + "link"]).join(" ; "),
+           size: String(v[p + "size"] || "").trim() };
 }
 function addItem(){
   openSheet("Add an item", itemFields(true), {type: "Stocked", unit: "", o_unit: "", name: S.q.trim()}, function(v){
@@ -768,7 +873,7 @@ function editItem(it){
       sync("Not saved"); render(); toast("Not deleted, so the item is back. " + problem(e), 9000);
     });
   });
-  openSheet("Edit " + it.name, itemFields(false), Object.assign({}, it, {type: kindOf(it)}), function(v){
+  openSheet("Edit " + it.name, itemFields(false, sized(it)), Object.assign({}, it, {type: kindOf(it)}), function(v){
     v.stocked = v.type === "Stocked" ? "Yes" : (it.stocked === "Personal" ? "Personal" : "No");
     if (v.type === "Price only" && S.scope === "main") S.scope = "more";
     /* The change shows at once and the form closes; the Sheet is updated in the background. An edit never changes the report or its date. */
@@ -782,7 +887,7 @@ function editItem(it){
     });
   }, del);
 }
-function editOpt(it, o){
+function editOpt(it, o, presetSize){
   var adding = !o, del = adding ? null : h("button", {class: "btn", type: "button", text: "Remove option"});
   if (del) del.addEventListener("click", function(){
     if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Confirm remove"; return; }
@@ -794,11 +899,14 @@ function editOpt(it, o){
       sync("Not saved"); render(); toast("Not removed, so the option is back. " + problem(e), 9000);
     });
   });
-  openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields(), o ? Object.assign({}, o, {link: linkList(o.link).join("\n")}) : {unit: it.unit || "g", pref: !(it.opts || []).length}, function(v){
+  var names = groupsOf(it).map(function(g){ return g.key; }).filter(Boolean), first = shownGroups(it).filter(function(g){ return g.key; })[0];
+  var start = o ? Object.assign({}, o, {link: linkList(o.link).join("\n")}) : {unit: it.unit || "g", pref: true, size: presetSize != null ? presetSize : (first ? first.key : "")};
+  openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields("", names), start, function(v){
     /* Shows at once and saved in the background, like reports. A new row has no ID until the Sheet answers, so it cannot be edited or starred until then. */
     var opt = optFrom(v), before = it.opts.map(function(x){ return {ref: x, val: Object.assign({}, x)}; }), local;
     if (o){ Object.assign(o, opt); local = o; }
     else { local = Object.assign({oid: "", alt: "", link: "", hidden: false, bought: null, last: "", checked: ""}, opt); it.opts.push(local); }
+    delete it._g;
     delete it._hay; render(); toast("Saved the " + opt.vendor + " option"); sync("Saving…");
     enqueue(function(){ return api("saveOption", {itemId: it.id, oid: o ? o.oid : null, opt: opt}, {localOpt: local}); }).catch(function(e){
       var cur = itemById(it.id);
@@ -809,59 +917,95 @@ function editOpt(it, o){
 }
 /* ---------- rendering ---------- */
 function by(name){ return name ? " by " + name : ""; }
-function statusLine(it){
-  var s = statusOf(it);
+function statusLine(it, g){
+  var st = g ? g.stock : it, s = stStatus(st);
   if (s === "None") return kindOf(it) === "Stocked" ? "Nobody has reported on this yet." : KIND_NOTE[kindOf(it)] + ".";
-  var when = day(it.statusAt);
-  return (s === "No need" ? "No need to restock for now" : statusLabel(s)) + (when ? ", reported " + when : ", check date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "");
+  var when = day(st.statusAt);
+  return (s === "No need" ? "No need to restock for now" : statusLabel(s)) + (when ? ", reported " + when : ", check date not recorded") + by(st.statusBy) + (st.statusNote ? " · " + st.statusNote : "");
+}
+/* One size's stock in a line: "Low · 1 box · Oct 20 by Owen". */
+function stockLine(it, g){
+  var st = g.stock, s = stStatus(st);
+  if (s === "None") return kindOf(it) === "Stocked" || g.key ? "no report yet" : "";
+  return [typeof st.level === "number" ? amount(st.level, it.unit) : (st.statusNote || ""), st.statusAt ? day(st.statusAt) + by(st.statusBy) : ""].filter(Boolean).join(" · ");
+}
+function reportButtons(it, g){
+  return [["Low", function(){ askLow(it, g); }], ["Out", function(){ askOut(it, g); }], ["Ordered", function(){ askOrdered(it, g); }], ["Report stock", function(){ askStock(it, g); }], ["No need", function(){ report(it, "No need", {g: g}); }]]
+    .map(function(b){ return h("button", {class: "btn small", type: "button", text: b[0], onclick: b[1]}); });
 }
 function fact(label, value){ return value ? h("div", null, h("dt", {text: label}), h("dd", null, value)) : null; }
+function optRowEl(it, o, dim){
+  var bought = o.bought ? "bought " + o.bought + (o.bought === 1 ? " time" : " times") + (o.last ? ", last " + day(o.last) : "") : "";
+  var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
+  return h("tr", {class: dim ? "dim" : null},
+    h("td", {class: o.pref ? "pref" : ""}, S.canWrite
+      ? h("button", {class: "star", type: "button", disabled: !o.oid, "aria-pressed": String(!!o.pref), "aria-label": (o.pref ? "Unstar " : "Star ") + (o.vendor || "this option"),
+                     title: o.pref ? "Starred: shows by default. Click to unstar (it is then hidden)" : "Click to star: it then shows by default, with its size", text: o.pref ? "★" : "☆", onclick: function(){ toggleStar(it, o); }})
+      : (o.pref ? "★ " : ""), o.vendor || ""),
+    h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
+    h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
+    h("td", {class: "r num", text: money(o.price)}), h("td", {class: "r num", text: per}),
+    h("td", null, linksEl(o.link)),
+    h("td", null, linkify([bought, o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · "))),
+    h("td", null, S.canWrite ? (o.oid ? h("button", {class: "btn small", type: "button", text: "Edit", onclick: function(){ editOpt(it, o); }}) : h("span", {class: "note", text: "saving…"})) : null));
+}
 function detail(it){
-  var d = h("div", {class: "detail"});
-  d.appendChild(h("div", {class: "note", text: statusLine(it)}));
-  if (S.canWrite){
-    var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
-    [["Low", function(){ askLow(it); }], ["Out", function(){ askOut(it); }], ["Ordered", function(){ askOrdered(it); }], ["Report stock", function(){ askStock(it); }], ["No need", function(){ report(it, "No need"); }]].forEach(function(b){
-      acts.appendChild(h("button", {class: "btn small", type: "button", text: b[0], onclick: b[1]}));
-    });
-    d.appendChild(acts);
-  }
+  var d = h("div", {class: "detail"}), gs = groupsOf(it), shown = gs.filter(function(g){ return g.shown; }), multi = shown.length > 1, isSized = sized(it);
+  var opts = it.opts || [], anyStar = opts.some(function(o){ return o.pref; }), open = !!S.showAll[it.id];
+  var g0 = shown[0] || gs[0];
+  if (!multi){
+    d.appendChild(h("div", {class: "note", text: (isSized && g0 && g0.label ? g0.label + ": " : "") + statusLine(it, g0)}));
+    if (S.canWrite){
+      var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
+      reportButtons(it, g0).forEach(function(b){ acts.appendChild(b); });
+      d.appendChild(acts);
+    }
+  } else d.appendChild(h("div", {class: "note", text: "Each size has its own stock" + (typeof it.min === "number" ? "; the minimum level, " + amount(it.min, it.unit) + ", applies to each" : "") + ". Report on a size from its line below."}));
+  var last = oldestCheck(it), g0st = g0 ? g0.stock : it;
   d.appendChild(h("dl", {class: "facts"},
     fact("Where it is kept", it.loc),
-    fact("Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "Personal" ? "Each person keeps their own" : kindOf(it) === "Stocked" ? "Not set yet" : "")),
-    fact("On the shelf", hasLevel(it) ? amount(it.level, it.unit) + " at the last count" + (it.statusAt ? " (" + day(it.statusAt) + ")" : "") : ""),
+    fact(multi ? "Minimum level, each size" : "Minimum level", it.min != null && it.min !== "" ? it.min + " " + (it.unit || "") : (it.stocked === "Personal" ? "Each person keeps their own" : kindOf(it) === "Stocked" ? "Not set yet" : "")),
+    fact("On the shelf", !multi && typeof g0st.level === "number" ? amount(g0st.level, it.unit) + " at the last count" + (g0st.statusAt ? " (" + day(g0st.statusAt) + ")" : "") : ""),
     fact("Type", kindOf(it)),
-    fact("Routine check", !S.isAdmin ? "" : typeof it.check === "number" && it.check > 0 ? "Every " + it.check + " days · last checked " + (it.statusAt ? day(it.statusAt) : "never") +
-      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(it.statusAt).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) + " (change in Edit item)"
+    fact("Routine check", !S.isAdmin ? "" : typeof it.check === "number" && it.check > 0 ? "Every " + it.check + " days · last checked " + (last ? day(last) : "never") + (multi ? " (the size checked longest ago)" : "") +
+      (isDue(it) ? " · due now" : " · next by " + day(new Date(new Date(String(last).replace(" ", "T")).getTime() + it.check * 864e5).toISOString().slice(0, 10))) + " (change in Edit item)"
       : kindOf(it) !== "Price only" ? "None; set one in Edit item → Check every (days)" : ""),
     fact("CAS", it.cas ? h("span", {class: "mono", text: it.cas}) : ""), fact("Required spec", it.spec),
     fact("Delivery", it.lead ? "More than 2 weeks" : ""), fact("Expiry", it.exp ? "Has an expiry date; check the bottle" : ""),
     fact("Source", it.source), fact("Notes", it.notes ? h("span", null, linkify(it.notes)) : ""), fact("Item code", h("span", {class: "mono", text: it.id}))));
-  var opts = (it.opts || []).slice().sort(function(a, b){ return sizeCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
-  if (opts.length){
-    var tb = h("tbody");
-    opts.forEach(function(o){
-      var bought = o.bought ? "bought " + o.bought + (o.bought === 1 ? " time" : " times") + (o.last ? ", last " + day(o.last) : "") : "";
-      var per = typeof o.price === "number" && o.pack > 0 ? money(o.price / o.pack) + " / " + o.unit : "";
-      tb.appendChild(h("tr", {class: o.hidden ? "dim" : null},
-        h("td", {class: o.pref ? "pref" : ""}, S.canWrite
-          ? h("button", {class: "star", type: "button", disabled: !o.oid, "aria-pressed": String(!!o.pref), "aria-label": (o.pref ? "Unstar " : "Star ") + (o.vendor || "this option"),
-                         title: o.pref ? "Starred (preferred). Click to unstar" : "Click to star as a preferred vendor", text: o.pref ? "★" : "☆", onclick: function(){ toggleStar(it, o); }})
-          : (o.pref ? "★ " : ""), o.vendor || ""),
-        h("td", {class: "mono"}, o.catalog || "", o.alt ? h("div", {class: "note", text: "alt: " + o.alt}) : null),
-        h("td", {text: o.grade || ""}), h("td", {class: "num", text: pack(o)}),
-        h("td", {class: "r num", text: money(o.price)}), h("td", {class: "r num", text: per}),
-        h("td", null, linksEl(o.link)),
-        h("td", null, linkify([bought, o.pnote, o.checked ? "priced " + o.checked : (o.price != null ? "price date not recorded" : ""), o.comment].filter(Boolean).join(" · "))),
-        h("td", null, S.canWrite ? (o.oid ? h("button", {class: "btn small", type: "button", text: "Edit", onclick: function(){ editOpt(it, o); }}) : h("span", {class: "note", text: "saving…"})) : null)));
-    });
-    d.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null,
+  /* The vendor rows, grouped by size. Only starred rows (and the sizes that have them) show until the arrow is opened. */
+  var hidSizes = gs.filter(function(g){ return !g.shown; }), hidRows = anyStar ? opts.filter(function(o){ return !o.pref; }).length : 0;
+  var tb = h("tbody"), any = false;
+  gs.forEach(function(g){
+    if (!g.shown && !open) return;
+    var rows = g.rows.filter(function(o){ return o.pref || !anyStar || open; }).sort(function(a, b){ return sizeCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
+    if (isSized || multi){
+      var head = h("div", {class: "sizehead"}, h("span", {class: "sz", text: g.label || "Other rows"}),
+        h("span", {class: "pill " + pillOf(stStatus(g.stock)), text: statusLabel(stStatus(g.stock))}), h("span", {class: "note", text: stockLine(it, g)}));
+      if (!g.shown) head.appendChild(h("span", {class: "note", text: "hidden: star a row to show this size"}));
+      if (multi && g.shown && S.canWrite){ var ba = h("span", {class: "acts"}); reportButtons(it, g).forEach(function(b){ ba.appendChild(b); }); head.appendChild(ba); }
+      tb.appendChild(h("tr", {class: "sizerow" + (g.shown ? "" : " dim")}, h("td", {colspan: "9"}, head)));
+      any = true;
+    }
+    rows.forEach(function(o){ tb.appendChild(optRowEl(it, o, !g.shown || (anyStar && !o.pref))); any = true; });
+    if (!g.rows.length && g.key) tb.appendChild(h("tr", null, h("td", {colspan: "9"}, h("span", {class: "note", text: "No vendor row for this size yet. "}),
+      S.canWrite ? h("button", {class: "btn small", type: "button", text: "Add one", onclick: function(){ editOpt(it, null, g.key); }}) : null,
+      S.canWrite && (S.sizeIdx[it.id] || {})[g.key] ? h("button", {class: "btn small", type: "button", text: "Remove this size", onclick: function(){ removeSize(it, g); }}) : null)));
+  });
+  if (any) d.appendChild(h("div", {class: "scroll"}, h("table", {class: "vendors"}, h("thead", null, h("tr", null,
       h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Link"}), h("th", {text: "Notes"}), h("th"))), tb)));
-    if (opts.some(function(o){ return o.hidden; })) d.appendChild(h("div", {class: "note", text: "Grey rows are sizes or prices from the price list with no record of the lab buying them."}));
-  } else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
+  else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
+  if (hidSizes.length || hidRows){
+    var what = [hidSizes.length ? hidSizes.length + (hidSizes.length === 1 ? " size" : " sizes") : "", hidRows ? hidRows + (hidRows === 1 ? " row" : " rows") : ""].filter(Boolean).join(", ");
+    d.appendChild(h("button", {class: "btn small toggle", type: "button", "aria-expanded": String(open), onclick: function(){ S.showAll[it.id] = !open; render(); }},
+      open ? "▾ Hide what is not starred" : "▸ Show what is not starred (" + what + ")"));
+    if (open) d.appendChild(h("div", {class: "note", text: "Grey rows are not starred. Star one to show it, and its size, by default."}));
+  } else if (!anyStar && opts.length > 1) d.appendChild(h("div", {class: "note", text: "No row is starred yet, so every row shows. Star the ones the lab uses."}));
   if (S.canWrite) d.appendChild(h("div", {class: "acts"},
     h("button", {class: "btn small", type: "button", text: "Add vendor option", onclick: function(){ editOpt(it, null); }}),
-    h("button", {class: "btn small", type: "button", text: "Edit item", onclick: function(){ editItem(it); }})));
+    h("button", {class: "btn small", type: "button", text: "Add size", onclick: function(){ addSize(it); }}),
+    h("button", {class: "btn small", type: "button", text: "Edit item", onclick: function(){ editItem(it); }}),
+    h("button", {class: "btn small", type: "button", text: "Add a reminder", onclick: function(){ addItemReminder(it); }})));
   var hist = S.events.filter(function(e){ return e.item === it.id; }).slice(0, 5);
   if (hist.length){
     var hl = h("div", {class: "hist"});
@@ -904,7 +1048,7 @@ function renderDue(){
   if (!due.length) return;
   var card = h("div", {class: "due"}, h("h2", null, "Due to check", h("span", {class: "count", text: String(due.length)})));
   if (S.status === "due"){
-    card.appendChild(h("div", {class: "note", text: "The list below shows only these items. Any report on an item (Report stock, Low, Out, Ordered or No need) counts as its check."}));
+    card.appendChild(h("div", {class: "note", text: "The list below shows only these items. Any report (Report stock, Low, Out, Ordered or No need) counts as a check; an item with several sizes needs one on each size it shows."}));
     card.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "Show everything again", onclick: function(){ S.status = "all"; S.open = null; render(); }})));
   } else {
     card.appendChild(h("div", {class: "note", text: "Not checked within their interval, or never. Open one and report on it; any report counts as its check."}));
@@ -961,7 +1105,7 @@ function renderItems(){
       h("span", {class: "st" + (S.isAdmin && isDue(it) ? " isdue" : "")}, h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : pillOf(s)), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
         S.isAdmin && isDue(it) ? h("span", {class: "pill Due", title: "Due to check: report on it (Report stock, Low, Out, Ordered or No need)", text: "Due"}) : null),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
-        h("div", {class: "meta"}, [it.loc, hasLevel(it) ? amount(it.level, it.unit) + " on shelf" : "", it.lead ? "long lead time" : ""].filter(Boolean).join(" · "))),
+        h("div", {class: "meta"}, [it.loc, rowStock(it), it.lead ? "long lead time" : ""].filter(Boolean).join(" · "))),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
     if (open) wrap.appendChild(detail(it));
   });
@@ -971,25 +1115,40 @@ function renderItems(){
   }
   box.appendChild(wrap);
 }
+/* The list row's stock: the count of the one size on show, or each size's count or status when there are several. */
+function rowStock(it){
+  var sh = shownGroups(it);
+  if (sh.length === 1){ var st = sh[0].stock; return typeof st.level === "number" ? amount(st.level, it.unit) + " on shelf" : ""; }
+  return sh.map(function(g){ var st = g.stock, s = stStatus(st); return (g.label || "other") + " " + (typeof st.level === "number" ? amount(st.level, it.unit) : s === "None" ? "–" : s.toLowerCase()); }).join(" · ");
+}
 function reorderText(list){
-  return list.map(function(it){ var p = bestOf(it); return it.name + " (" + statusOf(it) + (it.statusNote ? ": " + it.statusNote : "") + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
+  return list.map(function(x){ var it = x.it, g = x.g, p = bestIn(it, g), st = g.stock;
+    return it.name + (x.many ? " (" + g.label + ")" : "") + " (" + x.s + (st.statusNote ? ": " + st.statusNote : "") + ")" + (p ? ": " + [p.vendor, p.catalog, pack(p), money(p.price)].filter(Boolean).join(", ") : ": no vendor recorded"); }).join("\n");
+}
+/* Reorder works per size: a size that is low or out is a line of its own, with that size's starred vendor row. */
+function sizeLines(want){
+  var out = [];
+  sorted(S.items).forEach(function(it){
+    var sh = shownGroups(it), many = sized(it);
+    sh.forEach(function(g){ var s = stStatus(g.stock); if (want.indexOf(s) >= 0) out.push({it: it, g: g, s: s, many: many}); });
+  });
+  return out;
 }
 function renderReorder(){
   var v = $("v-reorder"); v.textContent = "";
-  var need = sorted(S.items.filter(function(it){ var s = statusOf(it); return s === "Low" || s === "Out"; }));
-  var wait = sorted(S.items.filter(function(it){ return statusOf(it) === "Ordered"; }));
+  var need = sizeLines(["Low", "Out"]), wait = sizeLines(["Ordered"]);
   $("c-reorder").textContent = String(need.length);
   function table(list, action, ask){
     var tb = h("tbody"), total = 0;
-    list.forEach(function(it){
-      var p = bestOf(it); if (p && typeof p.price === "number") total += p.price;
-      var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
+    list.forEach(function(x){
+      var it = x.it, g = x.g, st = g.stock, p = bestIn(it, g); if (p && typeof p.price === "number") total += p.price;
+      var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name)); if (x.many && g.label) nm.appendChild(h("span", {class: "aka", text: "  " + g.label}));
       tb.appendChild(h("tr", null,
-        h("td", null, h("span", {class: "pill " + statusOf(it), text: statusOf(it)})),
-        h("td", null, nm, h("div", {class: "note", text: (day(it.statusAt) || "date not recorded") + by(it.statusBy) + (it.statusNote ? " · " + it.statusNote : "") + (typeof it.min === "number" ? " · min " + amount(it.min, it.unit) : "")})),
+        h("td", null, h("span", {class: "pill " + x.s, text: x.s})),
+        h("td", null, nm, h("div", {class: "note", text: (day(st.statusAt) || "date not recorded") + by(st.statusBy) + (st.statusNote ? " · " + st.statusNote : "") + (typeof it.min === "number" ? " · min " + amount(it.min, it.unit) : "")})),
         h("td", null, p ? p.vendor : "none recorded", p && linkList(p.link).length ? h("div", {class: "note"}, linksEl(p.link)) : null), h("td", {class: "mono", text: p ? p.catalog : ""}),
         h("td", {class: "num", text: pack(p)}), h("td", {class: "r num", text: p ? money(p.price) : ""}),
-        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: function(){ ask(it); }}) : null)));
+        h("td", null, S.canWrite ? h("button", {class: "btn small", type: "button", text: action, onclick: function(){ ask(it, g); }}) : null)));
     });
     return {el: h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Status"}), h("th", {text: "Item"}), h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th"))), tb)), total: total};
   }
@@ -1000,7 +1159,7 @@ function renderReorder(){
     a.appendChild(h("div", {class: "rowline"}, h("h2", {text: "To order"}), h("div", {class: "acts"},
       h("span", {class: "num", text: "One pack each: " + money(t.total)}),
       h("button", {class: "btn small", type: "button", text: "Copy list", onclick: function(){
-        (navigator.clipboard ? navigator.clipboard.writeText(reorderText(need)) : Promise.reject()).then(function(){ toast("Copied " + need.length + " items"); }, function(){ toast("Copying is blocked in this browser; select the table instead."); });
+        (navigator.clipboard ? navigator.clipboard.writeText(reorderText(need)) : Promise.reject()).then(function(){ toast("Copied " + need.length + " lines"); }, function(){ toast("Copying is blocked in this browser; select the table instead."); });
       }}))));
     a.appendChild(t.el);
   }
@@ -1026,6 +1185,7 @@ function renderActivity(){
   v.appendChild(p);
 }
 function render(){
+  S.items.forEach(function(it){ delete it._g; });
   ["items","reorder","activity","reminders"].forEach(function(t){
     $("v-" + t).hidden = S.tab !== t; $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
   });
@@ -1039,12 +1199,14 @@ function render(){
 /* ---------- export ---------- */
 function csvCell(v){ v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 function exportCsv(){
-  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes","Type","Show","Current level",
-               "Vendor","Catalog #","Grade","Pack size","Pack unit","Price","Preferred","Price note","Alternative catalog #","Price checked on","Comment"]];
+  var rows = [["Item ID","Name","Also called","CAS","Category","Status","Status date","Location","Min level","Unit","Stocked","Lead >2 wk","Has expiry","Required spec","Source","Notes","Type","Show","Current level","Sizes",
+               "Vendor","Catalog #","Grade","Size","Pack size","Pack unit","Price","Preferred","Price note","Alternative catalog #","Price checked on","Comment"]];
   sorted(S.items).forEach(function(it){
-    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (it.statusAt || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes, kindOf(it), showOf(it), hasLevel(it) ? it.level : ""];
+    var sh = shownGroups(it), one = sh.length === 1 ? sh[0].stock : null;
+    var szs = sized(it) ? sh.map(function(g){ return g.label + ": " + statusLabel(stStatus(g.stock)) + (typeof g.stock.level === "number" ? " " + amount(g.stock.level, it.unit) : ""); }).join("; ") : "";
+    var base = [it.id, it.name, it.aka, it.cas, it.cat, statusLabel(statusOf(it)), (oldestCheck(it) || "").slice(0,10), it.loc, it.min, it.unit, it.stocked, it.lead ? "TRUE" : "", it.exp ? "TRUE" : "", it.spec, it.source, it.notes, kindOf(it), showOf(it), one && typeof one.level === "number" ? one.level : "", szs];
     var opts = (it.opts || []).length ? it.opts : [null];
-    opts.forEach(function(o){ rows.push(base.concat(o ? [o.vendor, o.catalog, o.grade, o.pack, o.unit, o.price, o.pref ? "TRUE" : "FALSE", o.pnote, o.alt, o.checked, o.comment] : ["","","","","","","","","","",""])); });
+    opts.forEach(function(o){ rows.push(base.concat(o ? [o.vendor, o.catalog, o.grade, o.size || "", o.pack, o.unit, o.price, o.pref ? "TRUE" : "FALSE", o.pnote, o.alt, o.checked, o.comment] : ["","","","","","","","","","","",""])); });
   });
   var blob = new Blob(["﻿" + rows.map(function(r){ return r.map(csvCell).join(","); }).join("\n")], {type: "text/csv"});
   var a = h("a", {href: URL.createObjectURL(blob), download: "shao-lab-inventory-" + new Date().toISOString().slice(0,10) + ".csv"});
@@ -1079,7 +1241,7 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
     S.name = saved.name; S.pass = saved.pass;
     var kept = readCache();
     if (kept){
-      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; setRole(kept.role); S.loaded = true;
+      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role); S.loaded = true;
       render(); sync("Saved copy; updating…"); load(true);
     } else { render(); load(); }
   }
