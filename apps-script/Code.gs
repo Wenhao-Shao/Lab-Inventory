@@ -85,6 +85,7 @@ function onOpen() {
   if (typeof applyChanges1021d === 'function') menu.addItem('9. Remove merge notes (21 Oct)', 'applyChanges1021d');
   if (typeof applyChanges1022 === 'function') menu.addItem('10. Group centrifuge tubes (22 Oct)', 'applyChanges1022');
   if (typeof applyChanges1028 === 'function') menu.addItem('11. Sizes for gloves, dropper bulb, PTFE filter paper (28 Oct)', 'applyChanges1028');
+  if (typeof applyChanges1028b === 'function') menu.addItem('12. A size for every item (28 Oct)', 'applyChanges1028b');
   menu.addToUi();
 }
 
@@ -206,6 +207,7 @@ function handle_(body) {
       else if (action === 'deleteReminder') patch = deleteReminder_(ss, body);
       else if (action === 'addSize') patch = addSize_(ss, body);
       else if (action === 'deleteSize') patch = deleteSize_(ss, body);
+      else if (action === 'renameSize') patch = renameSize_(ss, body);
       else throw fail_('invalid', 'Unknown action.');
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
@@ -301,6 +303,36 @@ function addSize_(ss, body) {
   var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = r[k]; });
   return { sizeRow: sent };
 }
+/** Renames a size: its vendor rows and its stock row move to the new name. Renaming an item's unnamed size (from "")
+ *  names it, and the item's own stock goes with it. */
+function renameSize_(ss, body) {
+  var id = String(body.itemId || ''), from = text_(body.from, 80), to = text_(body.to, 80);
+  if (!to) throw fail_('invalid', 'Name the size first.');
+  var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, id);
+  if (!row) throw fail_('not_found');
+  var opts = ss.getSheetByName(TABS.opts), sh = tab_(ss, TABS.sizes, SIZE_COLS, SIZE_TYPES);
+  cols_(opts, OPT_COLS);
+  var all = sizeRows_(sh), mine = all.filter(function (r) { return r.item === id; });
+  var optRows = rows_(opts, OPT_KEYS, OPT_TYPES);
+  if (to !== from && (mine.some(function (r) { return r.size === to; }) || optRows.some(function (o) { return o.item === id && (o.size || '') === to; })))
+    throw fail_('invalid', 'This item already has a size called ' + to + '.');
+  var col = OPT_KEYS.indexOf('size') + 1;
+  optRows.forEach(function (o, i) {
+    if (o.item === id && String(o.size || '').trim() === from) write_(opts, i + 2, [[to]], ['t'], col);
+  });
+  var srow = mine.filter(function (r) { return r.size === from; })[0], out;
+  if (srow) { srow.size = to; write_(sh, srow._row, [toRow_(srow, SIZE_KEYS, SIZE_TYPES)], SIZE_TYPES); out = srow; }
+  else {
+    var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
+    out = { item: id, size: to, status: from === '' ? cur.status : '', statusAt: from === '' ? cur.statusAt : '', statusBy: from === '' ? cur.statusBy : '',
+            statusNote: from === '' ? cur.statusNote : '', level: from === '' ? cur.level : null };
+    if (from === '' || !optRows.some(function (o) { return o.item === id && String(o.size || '').trim() === from; })) append_(sh, toRow_(out, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES);
+    else out = null;
+  }
+  var sent = null; if (out) { sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = out[k]; }); }
+  return { renamed: { item: id, from: from, to: to, row: sent } };
+}
+
 /** Removes a size's stock row. Its vendor rows, if any, keep their size name. */
 function deleteSize_(ss, body) {
   var id = String(body.itemId || ''), key = text_(body.size, 80), sh = ss.getSheetByName(TABS.sizes);

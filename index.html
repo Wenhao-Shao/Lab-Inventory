@@ -98,6 +98,8 @@ button.group:hover{color:var(--ink)}
 .sizehead .sz{font-weight:600;min-width:2.5em}
 .sizehead .acts{margin-left:auto;gap:6px}
 .btn.toggle{margin-top:8px}
+.btn.ghost{background:none;border-color:transparent;color:var(--muted);padding-left:6px;padding-right:6px}
+thead tr.bare{display:none}
 .pill.NoNeed{color:var(--none);background:var(--none-bg)}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
@@ -337,7 +339,7 @@ function groupsOf(it){
     var g = map[k], st = g.rows.filter(function(o){ return o.pref; });
     g.stock = stockOf(it, k);
     g.shown = !anyStar || !g.rows.length || st.length > 0;
-    g.label = k || (keys.length > 1 ? "Rows without a size" : ((st[0] || g.rows[0] || {}).grade || ""));
+    g.label = k || String((st[0] || g.rows[0] || {}).grade || "").trim() || "Standard";
     return g;
   });
   gs.sort(function(a, b){ return a.key === "" ? -1 : b.key === "" ? 1 : sizeCmp(a.key, b.key); });
@@ -451,6 +453,13 @@ function applyPatch(p, ctx){
   if (p.sizeRow){
     var si = -1; S.sizeRows.forEach(function(r, i){ if (r.item === p.sizeRow.item && r.size === p.sizeRow.size) si = i; });
     if (si >= 0) S.sizeRows[si] = Object.assign(S.sizeRows[si], p.sizeRow); else S.sizeRows.push(p.sizeRow);
+    indexSizes();
+  }
+  if (p.renamed){
+    var rn = p.renamed, ri2 = itemById(rn.item);
+    if (ri2) (ri2.opts || []).forEach(function(o){ if (String(o.size || "").trim() === rn.from) o.size = rn.to; });
+    S.sizeRows = S.sizeRows.filter(function(r){ return !(r.item === rn.item && (r.size === rn.from || r.size === rn.to)); });
+    if (rn.row) S.sizeRows.push(rn.row);
     indexSizes();
   }
   if (p.delSize){ S.sizeRows = S.sizeRows.filter(function(r){ return !(r.item === p.delSize.item && r.size === p.delSize.size); }); indexSizes(); }
@@ -720,6 +729,23 @@ function removeSize(it, g){
     S.sizeRows.push(row); indexSizes(); sync("Not saved"); render(); toast("Not removed: " + problem(e), 9000);
   });
 }
+function renameSize(it, g){
+  openSheet("Rename the size " + g.label, [{k: "size", label: "Name of the size or grade", req: true, wide: true},
+    {note: "Its vendor rows and its stock move with it."}], {size: g.key || g.label}, function(v){
+    var to = String(v.size || "").trim(); if (!to || to === g.key) return;
+    if (groupsOf(it).some(function(x){ return x.key === to; })) { toast("This item already has a size called " + to + "."); return; }
+    var from = g.key, rows = (it.opts || []).filter(function(o){ return String(o.size || "").trim() === from; }), row = (S.sizeIdx[it.id] || {})[from], made = null;
+    rows.forEach(function(o){ o.size = to; });
+    if (row) row.size = to;
+    else if (from === "" && it.status){ made = {item: it.id, size: to, status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote, level: it.level}; S.sizeRows.push(made); }
+    else if (!rows.length){ made = {item: it.id, size: to, status: "", statusAt: "", statusBy: "", statusNote: "", level: null}; S.sizeRows.push(made); }
+    indexSizes(); render(); toast("Renamed to " + to); sync("Saving…");
+    enqueue(function(){ return api("renameSize", {itemId: it.id, from: from, to: to}); }).catch(function(e){
+      rows.forEach(function(o){ o.size = from; }); if (row) row.size = from; if (made) S.sizeRows = S.sizeRows.filter(function(r){ return r !== made; });
+      indexSizes(); sync("Not saved"); render(); toast("Not renamed: " + problem(e), 9000);
+    });
+  });
+}
 function addItemReminder(it){
   openSheet("Reminder about " + it.name, [{k: "text", label: "Reminder", req: true, wide: true}], {text: it.name + ": "}, function(v){
     var t = String(v.text || "").trim(); if (!t) return; addReminder(t); toast("Added to Reminders");
@@ -953,14 +979,8 @@ function detail(it){
   var d = h("div", {class: "detail"}), gs = groupsOf(it), shown = gs.filter(function(g){ return g.shown; }), multi = shown.length > 1, isSized = sized(it);
   var opts = it.opts || [], anyStar = opts.some(function(o){ return o.pref; }), open = !!S.showAll[it.id];
   var g0 = shown[0] || gs[0];
-  if (!multi){
-    d.appendChild(h("div", {class: "note", text: (isSized && g0 && g0.label ? g0.label + ": " : "") + statusLine(it, g0)}));
-    if (S.canWrite){
-      var acts = h("div", {class: "acts"}, h("span", {class: "lab", text: "Report:"}));
-      reportButtons(it, g0).forEach(function(b){ acts.appendChild(b); });
-      d.appendChild(acts);
-    }
-  } else d.appendChild(h("div", {class: "note", text: "Each size has its own stock" + (typeof it.min === "number" ? "; the minimum level, " + amount(it.min, it.unit) + ", applies to each" : "") + ". Report on a size from its line below."}));
+  if (multi) d.appendChild(h("div", {class: "note", text: "Each size has its own stock" + (typeof it.min === "number" ? "; the minimum level, " + amount(it.min, it.unit) + ", applies to each" : "") + ". Report on a size from its line."}));
+  else if (kindOf(it) !== "Stocked" && stStatus(g0 ? g0.stock : it) === "None") d.appendChild(h("div", {class: "note", text: KIND_NOTE[kindOf(it)] + "."}));
   var last = oldestCheck(it), g0st = g0 ? g0.stock : it;
   d.appendChild(h("dl", {class: "facts"},
     fact("Where it is kept", it.loc),
@@ -979,22 +999,26 @@ function detail(it){
   gs.forEach(function(g){
     if (!g.shown && !open) return;
     var rows = g.rows.filter(function(o){ return o.pref || !anyStar || open; }).sort(function(a, b){ return sizeCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
-    if (isSized || multi){
-      var head = h("div", {class: "sizehead"}, h("span", {class: "sz", text: g.label || "Other rows"}),
+    {
+      var head = h("div", {class: "sizehead"}, h("span", {class: "sz", text: g.label}),
         h("span", {class: "pill " + pillOf(stStatus(g.stock)), text: statusLabel(stStatus(g.stock))}), h("span", {class: "note", text: stockLine(it, g)}));
       if (!g.shown) head.appendChild(h("span", {class: "note", text: "hidden: star a row to show this size"}));
-      if (multi && g.shown && S.canWrite){ var ba = h("span", {class: "acts"}); reportButtons(it, g).forEach(function(b){ ba.appendChild(b); }); head.appendChild(ba); }
+      if (S.canWrite){
+        var ba = h("span", {class: "acts"});
+        if (g.shown) reportButtons(it, g).forEach(function(b){ ba.appendChild(b); });
+        ba.appendChild(h("button", {class: "btn small ghost", type: "button", title: "Rename this size", "aria-label": "Rename the size " + g.label, text: "✎", onclick: function(){ renameSize(it, g); }}));
+        head.appendChild(ba);
+      }
       tb.appendChild(h("tr", {class: "sizerow" + (g.shown ? "" : " dim")}, h("td", {colspan: "9"}, head)));
       any = true;
     }
     rows.forEach(function(o){ tb.appendChild(optRowEl(it, o, !g.shown || (anyStar && !o.pref))); any = true; });
-    if (!g.rows.length && g.key) tb.appendChild(h("tr", null, h("td", {colspan: "9"}, h("span", {class: "note", text: "No vendor row for this size yet. "}),
+    if (!g.rows.length) tb.appendChild(h("tr", null, h("td", {colspan: "9"}, h("span", {class: "note", text: "No vendor row for this size yet. "}),
       S.canWrite ? h("button", {class: "btn small", type: "button", text: "Add one", onclick: function(){ editOpt(it, null, g.key); }}) : null,
       S.canWrite && (S.sizeIdx[it.id] || {})[g.key] ? h("button", {class: "btn small", type: "button", text: "Remove this size", onclick: function(){ removeSize(it, g); }}) : null)));
   });
-  if (any) d.appendChild(h("div", {class: "scroll"}, h("table", {class: "vendors"}, h("thead", null, h("tr", null,
+  if (any) d.appendChild(h("div", {class: "scroll"}, h("table", {class: "vendors"}, h("thead", null, h("tr", {class: opts.length ? null : "bare"},
       h("th", {text: "Vendor"}), h("th", {text: "Catalog #"}), h("th", {text: "Grade / size"}), h("th", {text: "Pack"}), h("th", {class: "r", text: "Price"}), h("th", {class: "r", text: "Per unit"}), h("th", {text: "Link"}), h("th", {text: "Notes"}), h("th"))), tb)));
-  else d.appendChild(h("div", {class: "note", text: "No vendor recorded for this item yet."}));
   if (hidSizes.length || hidRows){
     var what = [hidSizes.length ? hidSizes.length + (hidSizes.length === 1 ? " size" : " sizes") : "", hidRows ? hidRows + (hidRows === 1 ? " row" : " rows") : ""].filter(Boolean).join(", ");
     d.appendChild(h("button", {class: "btn small toggle", type: "button", "aria-expanded": String(open), onclick: function(){ S.showAll[it.id] = !open; render(); }},
