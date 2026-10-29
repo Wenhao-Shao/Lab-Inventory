@@ -449,14 +449,15 @@ function expand(d){
   return items;
 }
 /* Passcodes: read and edit (an "admin" passcode, if one was set in the Sheet, works the same as edit). Due to check and check intervals come with edit. */
-/* caps: what the Sheet script said this passcode can do (canTick, lowTicket, readReminder); an older script says nothing. */
+/* caps: what the Sheet script said this passcode can do (canTick, suspectLow, readReminder); an older script says nothing. */
 function setRole(r, caps){
-  caps = caps || {}; var canTick = caps.canTick, lowTicket = caps.lowTicket;
+  caps = caps || {}; var canTick = caps.canTick;
   S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = S.canWrite; if (!S.isAdmin && S.status === "due") S.status = "all";
   /* Ticking off and removing reminders: the admin passcode (or edit, while the Sheet has no admin passcode). An older Sheet script does not say: then edit can. */
   S.canTick = canTick === undefined ? S.canWrite : !!canTick;
-  /* The read-only passcode can mark a size Low (with about how much is left); the Sheet then adds a "Please check" reminder. */
-  S.lowTicket = r === "read" && !!lowTicket;
+  /* The read-only passcode can say a size looks low (with about how much is left). The stock is not changed: the size goes
+     on Due to check and the Sheet adds a "Please check" reminder. */
+  S.lowTicket = r === "read" && !!caps.suspectLow;
   /* ...and can add a reminder about one item, from the bell on its row in the list */
   S.readRem = r === "read" && !!caps.readReminder;
 }
@@ -498,7 +499,7 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, lowTicket: S.lowTicket, readReminder: S.readRem, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, suspectLow: S.lowTicket, readReminder: S.readRem, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
@@ -627,18 +628,13 @@ function report(it, ev, d){
     var ls = localSize(it, key); target = ls.row; if (ls.made) made.push(ls.row);
   }
   var label = useSize && g ? g.label : "";
-  var held = S.lowTicket && ev === "Low" && stStatus(target) === "Ordered";   /* already on order: the Sheet leaves it Ordered */
   var before = {status: target.status, statusAt: target.statusAt, statusBy: target.statusBy, statusNote: target.statusNote, level: target.level, unit: it.unit, flagBy: target.flagBy, flagAt: target.flagAt}, now = stamp();
   var oc = outcome(it, ev, Object.assign({}, d, {size: label}), target);
-  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note + (held ? " · still Ordered" : "")};
-  if (!held){
-    Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); if (!S.lowTicket) it.unit = oc.unit;
-    if (useSize){ target.flagBy = ""; target.flagAt = ""; }
-  }
-  S.events.unshift(le);
+  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note};
+  Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); it.unit = oc.unit; S.events.unshift(le);
+  if (useSize){ target.flagBy = ""; target.flagAt = ""; }
   render(); sync("Saving…");
   var who = it.name + (label ? " (" + label + ")" : "");
-  if (S.lowTicket) toast(who + (held ? " is already on order, so it stays Ordered." : " marked low.") + " A reminder was added for someone to check it.", 6000); else
   toast(ev === "Stock" ? who + ": " + oc.bare + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : who + " marked " + ev.toLowerCase());
   return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: label, sized: useSize, sizeKey: key, note: ""}, {localEvent: le}); }).catch(function(e){
     Object.assign(target, {status: before.status, statusAt: before.statusAt, statusBy: before.statusBy, statusNote: before.statusNote, level: before.level}); it.unit = before.unit;
@@ -735,14 +731,31 @@ function whoOf(it, g){ return it.name + (sized(it) && g && g.label ? " — " + g
 function askLow(it, g){
   g = onlyGroup(it, g);
   var fields = [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")];
-  if (S.lowTicket){   /* read-only passcode: a count is needed, and the report also becomes a "Please check" reminder */
+  if (S.lowTicket){   /* read-only passcode: the stock is not changed; a reminder and Due to check instead */
     var st = sized(it) && g ? g.stock : it;
-    fields = [{note: stStatus(st) === "Ordered"
-        ? "This is already marked Ordered" + (st.statusAt ? " (" + day(st.statusAt) + ")" : "") + ", so it stays Ordered. Your count goes into a reminder for someone to check."
-        : "This marks it low and adds a reminder for someone with edit access to check it."},
-      {k: "level", label: "About how much is left", type: "number", req: true}, unitField(it, "unit")];
+    openSheet(whoOf(it, g) + " looks low", [{note: "This does not change the stock. It adds a reminder and puts this on Due to check, so someone with edit access counts it." +
+        (stStatus(st) === "Ordered" ? " It is already marked Ordered" + (st.statusAt ? " (" + day(st.statusAt) + ")" : "") + "." : "")},
+      {k: "level", label: "About how much is left", type: "number", req: true}, unitField(it, "unit")],
+      {unit: it.unit || ""}, function(v){ suspectLow(it, g, v); });
+    return;
   }
   openSheet(whoOf(it, g) + " is low", fields, {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit, g: g}); });
+}
+/* Read-only passcode: someone thinks a size is low. Like Recheck, it shows at once (the Recheck tag) and is saved in the background;
+   the Sheet adds the "Please check" reminder. */
+function suspectLow(it, g, v){
+  var key = g ? g.key : "", label = sized(it) && g ? g.label : "", ls = localSize(it, key), row = ls.row, before = {flagBy: row.flagBy, flagAt: row.flagAt}, now = stamp();
+  if (ls.made && key === "" && it.status) Object.assign(row, {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote, level: it.level});
+  row.flagBy = S.name; row.flagAt = now;
+  var left = amount(v.level, it.unit || v.unit || "");
+  var le = {at: now, item: it.id, name: it.name, event: "Recheck", by: S.name, note: (label ? label + " · " : "") + "thinks it is low, about " + left + " left"}; S.events.unshift(le);
+  render(); sync("Saving…");
+  toast("Thanks. " + it.name + (label ? " (" + label + ")" : "") + " is on Due to check, and a reminder was added for someone to count it.", 6000);
+  return enqueue(function(){ return api("suspectLow", {itemId: it.id, sizeKey: key, size: label, level: v.level, unit: v.unit}, {localEvent: le}); }).catch(function(e){
+    if (ls.made){ S.sizeRows = S.sizeRows.filter(function(r){ return r !== row; }); indexSizes(); } else Object.assign(row, before);
+    var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
+    sync("Not saved"); render(); toast("Not saved: " + problem(e), 9000);
+  });
 }
 /* What the last Ordered report on a size said was ordered ("Ordered 2 box"), while that size is still marked Ordered. */
 function onOrder(st){
@@ -1084,7 +1097,7 @@ function detail(it){
         ba.appendChild(h("button", {class: "btn small ghost", type: "button", title: "Rename this size", "aria-label": "Rename the size " + g.label, text: "✎", onclick: function(){ renameSize(it, g); }}));
         head.appendChild(ba);
       } else if (S.lowTicket && g.shown){
-        head.appendChild(h("span", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "Low", title: "Mark this size low; a reminder is added for someone to check it", onclick: function(){ askLow(it, g); }})));
+        head.appendChild(h("span", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "Low", title: "Looks low? Say about how much is left; someone with edit access will count it", onclick: function(){ askLow(it, g); }})));
       }
       tb.appendChild(h("tr", {class: "sizerow" + (g.shown ? "" : " dim")}, h("td", {colspan: "9"}, head)));
       any = true;

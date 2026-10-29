@@ -196,18 +196,19 @@ function handle_(body) {
   var action = String(body.action || 'load'), extra = {}, lean = Number(body.v) >= 2, patch = null;
   // Ticking off and removing reminders: the admin passcode, or the edit passcode while no admin passcode is set.
   extra.canTick = role === 'admin' || (role === 'edit' && !admin);
-  // The read-only passcode can do two things (29 Oct 2026): mark a size Low with about how much is left, which also adds a
-  // "Please check" reminder (Low from the edit or admin passcode adds none); and add a reminder about one item.
-  extra.lowTicket = role === 'read'; extra.readReminder = role === 'read';
+  // The read-only passcode can do two things (29 Oct 2026): say a size looks low (suspectLow: the stock is not changed; the
+  // size goes on Due to check and a "Please check" reminder is added), and add a reminder about one item.
+  extra.suspectLow = role === 'read'; extra.readReminder = role === 'read';
   if (action !== 'load') {
-    var readOk = (action === 'report' && String(body.event || '') === 'Low') || (action === 'addReminder' && !!body.itemId);
+    var readOk = action === 'suspectLow' || (action === 'addReminder' && !!body.itemId);
     if (role === 'read' ? !readOk : role !== 'edit' && role !== 'admin') throw fail_('read_only');
     var user = text_(body.user, 40);
     if (!user) throw fail_('invalid', 'A name is required to make changes.');
     var lock = LockService.getScriptLock();
     try { lock.waitLock(20000); } catch (err) { throw fail_('busy'); }
     try {
-      if (action === 'report') patch = report_(ss, body, user, role === 'read');
+      if (action === 'report') patch = report_(ss, body, user);
+      else if (action === 'suspectLow') patch = suspectLow_(ss, body, user);
       else if (action === 'addItem') { patch = addItem_(ss, body, role); extra.newId = patch.add.id; }
       else if (action === 'updateItem') patch = updateItem_(ss, body, role);
       else if (action === 'saveOption') patch = saveOption_(ss, body);
@@ -234,9 +235,7 @@ function handle_(body) {
 
 /* --------------------------------------------------------------- actions */
 
-/** ticket: the report comes from the read-only passcode. It must be Low with a count; it never sets the item's unit; it adds a
- *  "Please check" reminder; and a size marked Ordered stays Ordered (the count goes in the reminder and the stock event). */
-function report_(ss, body, user, ticket) {
+function report_(ss, body, user) {
   var ev = String(body.event || '');
   if (!STATUS_OF[ev]) throw fail_('invalid', 'Unknown report type.');
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.itemId);
@@ -245,7 +244,6 @@ function report_(ss, body, user, ticket) {
   var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
   var when = now_(ss), status = STATUS_OF[ev], level = cur.level, unit = cur.unit || text_(body.unit, 16);
   var given = num_(body.level), note = text_(body.note, 300);
-  if (ticket && (ev !== 'Low' || given == null)) throw fail_('invalid', 'Enter about how much is left.');
   function amount(n, u) { return String(n) + (u ? ' ' + u : ''); }
   if (ev === 'Out') { level = 0; }
   else if (ev === 'Low') { if (given != null) { level = given; note = amount(given, unit) + ' left'; } }
@@ -259,18 +257,6 @@ function report_(ss, body, user, ticket) {
   }
   var size = text_(body.size, 80);   // the size's name, written at the start of the note
   if (size) note = size + (note ? ' · ' + note : '');
-  if (ticket) {
-    var left = amount(given, unit), held = heldOrdered_(ss, body, cur);
-    if (held) {   // already on order: leave it Ordered, so the order is not lost; the count goes in the reminder
-      var hev = { at: when, item: String(body.itemId), name: cur.name, event: ev, by: user, note: (note + ' · still Ordered').slice(0, 300) };
-      append_(ss.getSheetByName(TABS.events), [hev.at, hev.item, hev.name, hev.event, hev.by, hev.note], EVENT_TYPES);
-      return { event: hev, reminder: lowTicket_(ss, user, cur, size, left, held) };
-    }
-    unit = cur.unit || '';   // the unit typed in goes in the note only
-    var tp = body.sized && body.sizeKey != null ? sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note) : plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note);
-    tp.reminder = lowTicket_(ss, user, cur, size, left, null);
-    return tp;
-  }
   if (body.sized && body.sizeKey != null) return sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note);
   return plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note);
 }
@@ -298,12 +284,22 @@ function shortDay_(at) {
   var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(at || ''));
   return m ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(m[2]) - 1] + ' ' + Number(m[3]) : String(at || '');
 }
-/** The reminder a Low from the read-only passcode adds, e.g.
- *  "Please check: Sam marked Acetone (4 L) low, about 1 L left." */
-function lowTicket_(ss, user, cur, size, left, held) {
-  var text = 'Please check: ' + user + ' marked ' + cur.name + (size ? ' (' + size + ')' : '') + ' low, about ' + left + ' left' +
-    (held ? '. It is already marked Ordered' + (held.at ? ' (' + shortDay_(held.at) + ')' : '') + ', so it was left as Ordered' : '') + '.';
-  return addReminder_(ss, { text: text }, user).reminder;
+/** From the read-only passcode: someone thinks a size is low and says about how much is left. The stock is not changed.
+ *  The size goes on Due to check (as with Recheck, until someone reports on it) and a reminder is added, e.g.
+ *  "Please check: Sam suspects Acetone (4 L) has only about 1 L left." The unit typed in goes in the text only. */
+function suspectLow_(ss, body, user) {
+  var given = num_(body.level);
+  if (given == null) throw fail_('invalid', 'Enter about how much is left.');
+  var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, String(body.itemId || ''));
+  if (!row) throw fail_('not_found');
+  var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
+  var size = text_(body.size, 80), unit = cur.unit || text_(body.unit, 16), left = String(given) + (unit ? ' ' + unit : '');
+  var held = heldOrdered_(ss, { itemId: body.itemId, sized: true, sizeKey: body.sizeKey }, cur);
+  var p = recheck_(ss, body, user, (size ? size + ' · ' : '') + 'thinks it is low, about ' + left + ' left');
+  var text = 'Please check: ' + user + ' suspects ' + cur.name + (size ? ' (' + size + ')' : '') + ' has only about ' + left + ' left.' +
+    (held ? ' It is marked Ordered' + (held.at ? ' (' + shortDay_(held.at) + ')' : '') + '.' : '');
+  p.reminder = addReminder_(ss, { text: text }, user).reminder;
+  return p;
 }
 
 /** A report on one size of an item that has sizes: the size's own stock row changes, and the item's status columns get the
@@ -349,7 +345,7 @@ function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, u
 }
 
 /** Asks for a size to be counted again: it goes on Due to check until the next report on it. Logged in Stock events as "Recheck". */
-function recheck_(ss, body, user) {
+function recheck_(ss, body, user, eventNote) {
   var id = String(body.itemId || ''), key = text_(body.sizeKey, 80);
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, id);
   if (!row) throw fail_('not_found');
@@ -362,7 +358,7 @@ function recheck_(ss, body, user) {
           statusNote: key === '' ? cur.statusNote : '', level: key === '' ? cur.level : null, flagBy: user, flagAt: when };
     append_(sh, toRow_(r, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES);
   }
-  var note = text_(body.size, 80);
+  var note = eventNote != null ? text_(eventNote, 300) : text_(body.size, 80);
   append_(ss.getSheetByName(TABS.events), [when, id, cur.name, 'Recheck', user, note], EVENT_TYPES);
   var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = r[k]; });
   return { sizeRow: sent, event: { at: when, item: id, name: cur.name, event: 'Recheck', by: user, note: note } };
