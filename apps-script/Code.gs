@@ -76,6 +76,7 @@ function onOpen() {
   var menu = SpreadsheetApp.getUi().createMenu('Lab inventory')
     .addItem('1. Set up tabs', 'setup')
     .addItem('2. Set passcodes', 'setPasscodes')
+    .addItem('Set admin passcode', 'setAdminPasscode')
     .addItem('Check status', 'status');
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
@@ -134,10 +135,11 @@ function setPasscodes() {
   ui.alert('Saved. Anyone already signed in with an old passcode will be asked to sign in again.');
 }
 
-/** Optional third passcode. It works exactly like the edit passcode (Due to check comes with edit); kept so a passcode already set this way still signs in. Not on the menu. */
+/** Third passcode (29 Oct 2026): it can do everything the edit passcode can, and it is the one that ticks off and removes reminders.
+ *  Edit passcodes can add reminders but not tick them off. Until an admin passcode is set, the edit passcode ticks them off too. */
 function setAdminPasscode() {
   var ui = SpreadsheetApp.getUi(), props = PropertiesService.getScriptProperties();
-  var a = ui.prompt('Admin passcode', 'For the PI and the Ordering Manager. It can edit, sees Due to check, and sets how often items are checked. At least 8 characters, different from the other two.', ui.ButtonSet.OK_CANCEL);
+  var a = ui.prompt('Admin passcode', 'For the PI and the Ordering Manager. It can do everything the edit passcode can, and it ticks off and removes reminders. At least 8 characters, different from the other two.', ui.ButtonSet.OK_CANCEL);
   if (a.getSelectedButton() !== ui.Button.OK) return;
   var v = a.getResponseText().trim();
   if (v.length < 8 || v === props.getProperty('EDIT_PASSCODE') || v === props.getProperty('READ_PASSCODE')) {
@@ -145,7 +147,7 @@ function setAdminPasscode() {
     return;
   }
   props.setProperty('ADMIN_PASSCODE', v);
-  ui.alert('Saved. Sign in on the inventory page with this passcode to see Due to check.');
+  ui.alert('Saved. Sign in on the inventory page with this passcode to tick off reminders. The edit passcode can now add reminders but not tick them off.');
 }
 
 function status() {
@@ -192,6 +194,8 @@ function handle_(body) {
 
   // A page that sends v >= 2 gets a short answer: only what changed after a save, and a compact table on load.
   var action = String(body.action || 'load'), extra = {}, lean = Number(body.v) >= 2, patch = null;
+  // Ticking off and removing reminders: the admin passcode, or the edit passcode while no admin passcode is set.
+  extra.canTick = role === 'admin' || (role === 'edit' && !admin);
   if (action !== 'load') {
     if (role !== 'edit' && role !== 'admin') throw fail_('read_only');
     var user = text_(body.user, 40);
@@ -206,8 +210,10 @@ function handle_(body) {
       else if (action === 'deleteOption') patch = deleteOption_(ss, body);
       else if (action === 'deleteItem') patch = deleteItem_(ss, body, user);
       else if (action === 'addReminder') patch = addReminder_(ss, body, user);
-      else if (action === 'checkReminder') patch = checkReminder_(ss, body, user);
-      else if (action === 'deleteReminder') patch = deleteReminder_(ss, body);
+      else if (action === 'checkReminder' || action === 'deleteReminder') {
+        if (!extra.canTick) throw fail_('admin_only', 'Only the admin passcode ticks off or removes reminders.');
+        patch = action === 'checkReminder' ? checkReminder_(ss, body, user) : deleteReminder_(ss, body);
+      }
       else if (action === 'addSize') patch = addSize_(ss, body);
       else if (action === 'deleteSize') patch = deleteSize_(ss, body);
       else if (action === 'renameSize') patch = renameSize_(ss, body);
@@ -217,9 +223,9 @@ function handle_(body) {
     } finally { lock.releaseLock(); }
     if (lean) return Object.assign({ ok: true, role: role, patch: patch }, extra);
   }
-  if (lean) return Object.assign({ ok: true, role: role }, compact_(ss));
+  if (lean) return Object.assign({ ok: true, role: role, canTick: extra.canTick }, compact_(ss));
   var data = readAll_(ss);
-  return Object.assign({ ok: true, role: role, items: data.items, events: data.events, reminders: reminders_(ss), sizes: sizes_(ss) }, extra);
+  return Object.assign({ ok: true, role: role, items: data.items, events: data.events, reminders: reminders_(ss), sizes: sizes_(ss) }, extra);   // extra carries canTick
 }
 
 /* --------------------------------------------------------------- actions */

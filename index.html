@@ -439,7 +439,11 @@ function expand(d){
   return items;
 }
 /* Passcodes: read and edit (an "admin" passcode, if one was set in the Sheet, works the same as edit). Due to check and check intervals come with edit. */
-function setRole(r){ S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = S.canWrite; if (!S.isAdmin && S.status === "due") S.status = "all"; }
+function setRole(r, canTick){
+  S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = S.canWrite; if (!S.isAdmin && S.status === "due") S.status = "all";
+  /* Ticking off and removing reminders: the admin passcode (or edit, while the Sheet has no admin passcode). An older Sheet script does not say: then edit can. */
+  S.canTick = canTick === undefined ? S.canWrite : !!canTick;
+}
 function itemById(id){ for (var i = 0; i < S.items.length; i++) if (S.items[i].id === id) return S.items[i]; return null; }
 function applyPatch(p, ctx){
   var it;
@@ -478,7 +482,7 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
@@ -492,7 +496,7 @@ function api(action, payload, ctx){
         .catch(function(e){ throw (e && e.error) ? e : {error: "network"}; });
   return call.then(function(d){
       if (!d || !d.ok) throw (d || {error: "network"});
-      setRole(d.role);
+      setRole(d.role, d.canTick);
       if (d.patch) applyPatch(d.patch, ctx);
       else {
         S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now();
@@ -558,6 +562,7 @@ function problem(e){
   var c = e && e.error;
   if (c === "bad_passcode"){ forget(); dropCache(); S.pass = ""; S.items = []; S.events = []; S.loaded = false; setRole(null); render(); showLogin("That passcode is not right, or it was changed. Enter the current one."); return "Sign in again."; }
   if (c === "read_only") return "Not saved. You are signed in with the read-only passcode.";
+  if (c === "admin_only"){ S.canTick = false; render(); return "Only the admin passcode ticks off or removes reminders."; }
   if (c === "busy") return "Not saved. Someone else was saving at the same moment; try again.";
   if (c === "not_found"){ load(true); return "Not saved. That row is no longer in the Sheet; the list was refreshed."; }
   if (c === "not_set_up") return "The spreadsheet is not set up yet: " + (e.message || "run the Lab inventory menu in the Sheet.");
@@ -678,14 +683,15 @@ function renderReminders(){
     }}, inp, h("button", {class: "btn primary", type: "submit", text: "Add"})));
   }
   function line(r){
-    var box = h("input", {type: "checkbox", "aria-label": (r.done ? "Mark not done: " : "Mark done: ") + r.text, disabled: !S.canWrite || !r.rid});
+    var box = h("input", {type: "checkbox", "aria-label": (r.done ? "Mark not done: " : "Mark done: ") + r.text, disabled: !S.canTick || !r.rid, title: S.canTick ? null : "Ticking off is for the admin passcode"});
     box.checked = !!r.done; box.addEventListener("change", function(){ tickReminder(r, box.checked); });
     var meta = r.done ? "Done " + day(r.doneAt) + by(r.doneBy) : "Added " + day(r.at) + by(r.by) + (r.rid ? "" : " · saving…");
-    var del = S.canWrite && r.rid ? h("button", {class: "btn small", type: "button", text: "Remove"}) : null;
+    var del = S.canTick && r.rid ? h("button", {class: "btn small", type: "button", text: "Remove"}) : null;
     if (del) del.addEventListener("click", function(){ if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Confirm remove"; return; } removeReminder(r); });
     return h("div", {class: "rem" + (r.done ? " done" : "")}, box, h("div", {class: "t"}, r.text, h("div", {class: "note", text: meta})), del);
   }
   var list = h("div");
+  if (S.canWrite && !S.canTick) list.appendChild(h("p", {class: "note", text: "You can add reminders. Ticking them off is done with the admin passcode."}));
   if (!open.length) list.appendChild(h("p", {class: "note", text: S.loaded ? "Nothing open." : "Sign in to see the reminders."}));
   open.forEach(function(r){ list.appendChild(line(r)); });
   p.appendChild(list);
@@ -1243,7 +1249,7 @@ function render(){
   $("addBtn").hidden = !(S.canWrite && S.loaded);
   $("exportBtn").hidden = !S.items.length;
   $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
-  $("who").textContent = S.role ? S.name + (S.canWrite ? " · can edit" : " · read only") : "";
+  $("who").textContent = S.role ? S.name + (S.role === "admin" ? " · admin" : S.canWrite ? " · can edit" : " · read only") : "";
   renderDue(); renderFilters(); renderItems(); renderReorder(); renderActivity(); renderReminders();
 }
 
@@ -1292,7 +1298,7 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
     S.name = saved.name; S.pass = saved.pass;
     var kept = readCache();
     if (kept){
-      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role); S.loaded = true;
+      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept.canTick); S.loaded = true;
       render(); sync("Saved copy; updating…"); load(true);
     } else { render(); load(); }
   }
