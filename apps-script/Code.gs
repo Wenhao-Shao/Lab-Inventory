@@ -77,7 +77,13 @@ function onOpen() {
     .addItem('1. Set up tabs', 'setup')
     .addItem('2. Set passcodes', 'setPasscodes')
     .addItem('Set admin passcode', 'setAdminPasscode')
-    .addItem('Check status', 'status');
+    .addItem('Check status', 'status')
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('Notifications')
+      .addItem('Set up Slack and email', 'setNotifications')
+      .addItem('Send a test', 'testNotifications')
+      .addItem('Due to check: count now', 'dueCheckNow')
+      .addItem('Due to check: daily alert on', 'dueAlertOn')
+      .addItem('Due to check: daily alert off', 'dueAlertOff'));
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
   if (typeof applyChanges1008 === 'function') menu.addItem('5. Apply changes (8 Oct)', 'applyChanges1008');
@@ -156,10 +162,159 @@ function status() {
   var items = ss.getSheetByName(TABS.items);
   alert_('Tabs: ' + (items ? 'ready, ' + Math.max(0, items.getLastRow() - 1) + ' items' : 'not set up') +
     '\nPasscodes: ' + (props.getProperty('EDIT_PASSCODE') && props.getProperty('READ_PASSCODE') ? 'set' : 'not set') +
-    '\nAdmin passcode: ' + (props.getProperty('ADMIN_PASSCODE') ? 'set' : 'not set'));
+    '\nAdmin passcode: ' + (props.getProperty('ADMIN_PASSCODE') ? 'set' : 'not set') + '\n\n' + notifyStatus_());
 }
 
 function alert_(msg) { try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); } }
+
+/* --------------------------------------------------------- notifications */
+// 29 Oct 2026. Two messages, both sent from this script (it runs as the Sheet's owner):
+//   1. Each new reminder is posted to the Slack channel of the webhook (#ordering-receiving), @-mentioning NOTIFY_SLACK.
+//   2. Once a day (trigger: Notifications > Due to check: daily alert on), if more than DUE_ALERT_OVER items are due to check,
+//      a Slack post @-mentioning NOTIFY_SLACK and an email to NOTIFY_EMAIL. Sent again only after a week, or after the number
+//      has dropped to the limit or below and gone over again.
+// Script properties (set from Notifications > Set up Slack and email; never written in this file, which is public on GitHub):
+//   SLACK_WEBHOOK  a Slack Incoming Webhook URL; NOTIFY_SLACK  Slack member IDs, e.g. "U01ABC, U02DEF";
+//   NOTIFY_EMAIL   email addresses, comma separated; DUE_ALERT_OVER  the limit (default 20).
+var PAGE_URL = 'https://wenhao-shao.github.io/Lab-Inventory/';
+var NOTIFY_ = [];
+function prop_(k) { return PropertiesService.getScriptProperties().getProperty(k) || ''; }
+function list_(v) { return String(v || '').split(/[\s,;]+/).filter(Boolean); }
+function mentions_() { return list_(prop_('NOTIFY_SLACK')).map(function (id) { return '<@' + id + '>'; }).join(' '); }
+function dueOver_() { var n = Number(prop_('DUE_ALERT_OVER')); return n > 0 ? Math.floor(n) : 20; }
+/** Text from the page, made safe for Slack: no links, mentions or @channel can be slipped in. */
+function slackText_(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+/** Posts to the webhook's channel. True when Slack took it; false (and logged) when it did not or no webhook is set. */
+function slack_(text) {
+  var url = prop_('SLACK_WEBHOOK');
+  if (!url) return false;
+  try {
+    var r = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify({ text: text }), muteHttpExceptions: true });
+    if (r.getResponseCode() === 200) return true;
+    Logger.log('Slack answered ' + r.getResponseCode() + ': ' + r.getContentText());
+  } catch (e) { Logger.log('Slack: ' + e); }
+  return false;
+}
+function sendQueued_() {
+  var q = NOTIFY_; NOTIFY_ = [];
+  q.forEach(function (x) {
+    if (!x.reminder) return;
+    var r = x.reminder, who = mentions_();
+    slack_(':memo: New inventory reminder from *' + slackText_(r.by) + '*: ' + slackText_(r.text) + (who ? '\n' + who : '') +
+      '\n<' + PAGE_URL + '#reminders|Open Reminders>');
+  });
+}
+
+/** The items on Due to check, as the page counts them: a size on show that someone asked to recheck, or whose last report is
+ *  older than the item's "Check every (days)" (or that was never reported, when the item has a check interval). */
+function dueItems_(ss) {
+  var items = rows_(ss.getSheetByName(TABS.items), ITEM_KEYS, ITEM_TYPES).filter(function (r) { return r.id; });
+  var optsOf = {}, sizesOf = {}, sh = ss.getSheetByName(TABS.sizes), now = Date.now(), out = [];
+  rows_(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES).forEach(function (o) { if (o.item) (optsOf[o.item] = optsOf[o.item] || []).push(o); });
+  if (sh) sizeRows_(sh).forEach(function (r) { (sizesOf[r.item] = sizesOf[r.item] || {})[r.size] = r; });
+  function days(at) { if (!at) return Infinity; var d = new Date(String(at).replace(' ', 'T')); return isNaN(d) ? Infinity : (now - d) / 864e5; }
+  items.forEach(function (it) {
+    var opts = optsOf[it.id] || [], idx = sizesOf[it.id] || {}, anyStar = opts.some(function (o) { return o.pref; }), keys = [], rows = {};
+    function add(k) { if (!rows[k]) { rows[k] = []; keys.push(k); } }
+    opts.forEach(function (o) { var k = String(o.size || '').trim(); add(k); rows[k].push(o); });
+    Object.keys(idx).forEach(function (k) { if (k !== '' || rows['']) add(k); });
+    if (!keys.length) add('');
+    var hit = [];
+    keys.forEach(function (k) {
+      var st = idx[k] || (k === '' && !Object.keys(idx).some(function (x) { return idx[x].statusAt; }) ? it : {});
+      var starred = rows[k].some(function (o) { return o.pref; });
+      var shown = !anyStar || !rows[k].length || starred || ['Low', 'Out', 'Ordered'].indexOf(st.status) >= 0 || !!st.flagAt;
+      if (shown && (st.flagAt || (typeof it.check === 'number' && it.check > 0 && days(st.statusAt) >= it.check))) hit.push(k);
+    });
+    if (hit.length) out.push({ id: it.id, name: it.name, sizes: hit, nSizes: keys.length });
+  });
+  return out;
+}
+function dueLine_(d) { return d.name + (d.nSizes > 1 ? ' (' + d.sizes.map(function (k) { return k || 'unnamed size'; }).join(', ') + ')' : ''); }
+
+/** Daily, from the trigger. Sends the Due to check alert when more than the limit are due (see the top of this section). */
+function dueAlert() {
+  var props = PropertiesService.getScriptProperties(), id = props.getProperty('SHEET_ID');
+  var ss = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
+  return dueAlertFor_(ss, false);
+}
+function dueAlertFor_(ss, force) {
+  var props = PropertiesService.getScriptProperties(), due = dueItems_(ss), n = due.length, over = dueOver_();
+  if (n <= over && !force) { props.deleteProperty('DUE_ALERT_SENT'); return { sent: false, n: n, why: n + ' due; the alert is for more than ' + over + '.' }; }
+  var last = Number(props.getProperty('DUE_ALERT_SENT')) || 0;
+  if (!force && last && Date.now() - last < 7 * 864e5)
+    return { sent: false, n: n, why: n + ' due; the alert was already sent on ' + Utilities.formatDate(new Date(last), ss.getSpreadsheetTimeZone(), 'MMM d') + ' and goes again a week after that.' };
+  var names = due.map(dueLine_), head = names.slice(0, 15), rest = names.length - head.length, who = mentions_();
+  var slackOk = slack_(':clipboard: *' + n + ' inventory items are due to check.*' + (who ? ' ' + who : '') +
+    ' When you have a moment, please open <' + PAGE_URL + '|the inventory>, choose *Due to check*, and report on each one; any report (a count, Low, Out, Ordered or No need) counts as its check.\n' +
+    slackText_(head.join(' · ')) + (rest > 0 ? ' · and ' + rest + ' more' : ''));
+  var to = list_(prop_('NOTIFY_EMAIL')), mailOk = false;
+  if (to.length) {
+    try {
+      MailApp.sendEmail({ to: to.join(','), subject: 'Lab inventory: ' + n + ' items are due to check',
+        body: 'Hello,\n\n' + n + ' items in the lab inventory are due to check: their routine check interval has passed, or someone asked for a recheck.\n\n' +
+          'When you have a moment, please open the inventory, choose "Due to check", and report on each one. Any report (a count, Low, Out, Ordered or No need) counts as its check.\n\n' +
+          PAGE_URL + '\n\nDue now:\n' + names.map(function (x) { return '  - ' + x; }).join('\n') +
+          '\n\nThis message is sent automatically by the lab inventory when more than ' + over + ' items are due to check.' });
+      mailOk = true;
+    } catch (e) { Logger.log('Email: ' + e); }
+  }
+  if (slackOk || mailOk) props.setProperty('DUE_ALERT_SENT', String(Date.now()));
+  return { sent: slackOk || mailOk, n: n, why: n + ' due. Slack: ' + (slackOk ? 'sent' : prop_('SLACK_WEBHOOK') ? 'failed (see Executions)' : 'no webhook set') +
+    '. Email: ' + (mailOk ? 'sent to ' + to.join(', ') : to.length ? 'failed (see Executions)' : 'no address set') + '.' };
+}
+
+function setNotifications() {
+  var ui = SpreadsheetApp.getUi(), props = PropertiesService.getScriptProperties();
+  function ask(title, text, key, check) {
+    var cur = props.getProperty(key) || '';
+    var a = ui.prompt(title, text + '\n\nNow: ' + (key === 'SLACK_WEBHOOK' ? (cur ? 'set' : 'not set') : (cur || 'not set')) + '. Leave empty to keep it; type "none" to clear it.', ui.ButtonSet.OK_CANCEL);
+    if (a.getSelectedButton() !== ui.Button.OK) return false;
+    var v = a.getResponseText().trim();
+    if (!v) return true;
+    if (v.toLowerCase() === 'none') { props.deleteProperty(key); return true; }
+    if (check && !check(v)) { ui.alert('Not saved: that does not look right. Nothing else was changed after this step.'); return false; }
+    props.setProperty(key, v); return true;
+  }
+  if (!ask('Slack webhook', 'The Incoming Webhook URL for #ordering-receiving (it starts with https://hooks.slack.com/). Each new reminder is posted there.', 'SLACK_WEBHOOK',
+      function (v) { return /^https:\/\/hooks\.slack\.com\/\S+$/.test(v); })) return;
+  if (!ask('Who to @-mention in Slack', 'Slack member IDs, separated by commas (a member ID starts with U; find it in their Slack profile, More, Copy member ID).', 'NOTIFY_SLACK',
+      function (v) { return list_(v).every(function (x) { return /^[UW][A-Z0-9]{6,}$/.test(x); }); })) return;
+  if (!ask('Who gets the Due to check email', 'Email addresses, separated by commas.', 'NOTIFY_EMAIL',
+      function (v) { return list_(v).every(function (x) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); }); })) return;
+  if (!ask('When to send the Due to check alert', 'Send it when MORE than this many items are due to check (default 20).', 'DUE_ALERT_OVER',
+      function (v) { return /^\d+$/.test(v) && Number(v) > 0; })) return;
+  ui.alert('Saved.\n\n' + notifyStatus_() + '\n\nNext: Notifications > Send a test.');
+}
+function notifyStatus_() {
+  var on = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'dueAlert'; });
+  return 'Slack webhook: ' + (prop_('SLACK_WEBHOOK') ? 'set' : 'not set') + '\nSlack @-mentions: ' + (list_(prop_('NOTIFY_SLACK')).length || 'none') +
+    '\nDue to check email to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody') + '\nDue to check alert: more than ' + dueOver_() + ' items, daily check ' + (on ? 'on' : 'off');
+}
+/** A Slack post that mentions nobody, and an email to you only. */
+function testNotifications() {
+  var ui = SpreadsheetApp.getUi(), me = Session.getEffectiveUser().getEmail();
+  var ok = slack_(':white_check_mark: Test from the lab inventory. New reminders will be posted here' + (list_(prop_('NOTIFY_SLACK')).length ? ', mentioning ' + list_(prop_('NOTIFY_SLACK')).length + ' people' : '') + '.');
+  var mail = false;
+  try { MailApp.sendEmail(me, 'Lab inventory: test', 'This is how the Due to check email will arrive. It goes to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody yet') + '.'); mail = true; } catch (e) { Logger.log(e); }
+  ui.alert('Slack: ' + (ok ? 'posted (look in the channel)' : prop_('SLACK_WEBHOOK') ? 'did not go through; check the webhook URL' : 'no webhook set') + '\nEmail: ' + (mail ? 'sent to you (' + me + ')' : 'did not go through'));
+}
+function dueCheckNow() {
+  var ui = SpreadsheetApp.getUi(), ss = SpreadsheetApp.getActiveSpreadsheet(), due = dueItems_(ss), over = dueOver_();
+  var a = ui.alert('Due to check: ' + due.length, due.length + ' items are due to check now (the alert is for more than ' + over + ').\n\n' + due.slice(0, 25).map(dueLine_).join('\n') +
+    (due.length > 25 ? '\n... and ' + (due.length - 25) + ' more' : '') + '\n\nSend the alert now (Slack and email), whatever the number?', ui.ButtonSet.YES_NO);
+  if (a !== ui.Button.YES) return;
+  ui.alert(dueAlertFor_(ss, true).why);
+}
+function dueAlertOn() {
+  dueAlertOff(true);
+  ScriptApp.newTrigger('dueAlert').timeBased().everyDays(1).atHour(8).create();
+  SpreadsheetApp.getUi().alert('On. Every morning between 8 and 9 the inventory counts the items due to check, and sends the alert when there are more than ' + dueOver_() + '.');
+}
+function dueAlertOff(quiet) {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'dueAlert') ScriptApp.deleteTrigger(t); });
+  if (quiet !== true) SpreadsheetApp.getUi().alert('Off. No daily Due to check alert.');
+}
 
 /* --------------------------------------------------------------- web app */
 
@@ -200,7 +355,7 @@ function handle_(body) {
   // The read-only passcode can do two things (29 Oct 2026): say a size looks low (suspectLow: the stock is not changed; the
   // size goes on Due to check and a "Please check" reminder is added), and add a reminder about one item.
   extra.suspectLow = role === 'read'; extra.readReminder = role === 'read';
-  LOG_ = [];
+  LOG_ = []; NOTIFY_ = [];
   // Older activity, or a search of all of it: any passcode (29 Oct 2026).
   if (action === 'events') return Object.assign({ ok: true, role: role }, extra, eventsPage_(ss, body));
   if (action !== 'load') {
@@ -231,6 +386,7 @@ function handle_(body) {
       if (patch && LOG_.length) patch.log = LOG_;   // what this change wrote to the activity log
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
+    sendQueued_();   // Slack, after the lock, and never a reason for the save to fail
     if (lean) return Object.assign({ ok: true, role: role, patch: patch }, extra);
   }
   if (lean) return Object.assign({ ok: true, role: role }, extra, compact_(ss));
@@ -559,6 +715,7 @@ function addReminder_(ss, body, user, forItem) {
   var r = { rid: 'R-' + ('000' + (maxNumber_(sh, 1, 'R-') + 1)).slice(-4), text: text, at: now_(ss), by: user, done: false, doneAt: '', doneBy: '' };
   append_(sh, toRow_(r, REM_KEYS, REM_TYPES), REM_TYPES);
   log_(ss, r.rid, 'Reminder', 'Reminder added', user, text);
+  NOTIFY_.push({ reminder: r });
   return { reminder: r };
 }
 function checkReminder_(ss, body, user) {
