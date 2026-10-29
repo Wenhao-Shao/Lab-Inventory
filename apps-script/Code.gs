@@ -168,14 +168,17 @@ function status() {
 function alert_(msg) { try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); } }
 
 /* --------------------------------------------------------- notifications */
-// 29 Oct 2026. Two messages, both sent from this script (it runs as the Sheet's owner):
-//   1. Each new reminder is posted to the Slack channel of the webhook (#ordering-receiving), @-mentioning NOTIFY_SLACK.
+// 29 Oct 2026. Sent from this script (it runs as the Sheet's owner), through a Slack app's bot token and Gmail:
+//   1. Each new reminder: a direct message from the app to each person in REMINDER_DM (testing phase: Yue only). With
+//      REMINDER_IN_CHANNEL "yes" it is also posted in SLACK_CHANNEL, @-mentioning NOTIFY_SLACK (off while testing).
 //   2. Once a day (trigger: Notifications > Due to check: daily alert on), if more than DUE_ALERT_OVER items are due to check,
-//      a Slack post @-mentioning NOTIFY_SLACK and an email to NOTIFY_EMAIL. Sent again only after a week, or after the number
-//      has dropped to the limit or below and gone over again.
+//      a post in SLACK_CHANNEL @-mentioning NOTIFY_SLACK and an email to NOTIFY_EMAIL. Sent again only after a week, or after
+//      the number has dropped to the limit or below and gone over again.
 // Script properties (set from Notifications > Set up Slack and email; never written in this file, which is public on GitHub):
-//   SLACK_WEBHOOK  a Slack Incoming Webhook URL; NOTIFY_SLACK  Slack member IDs, e.g. "U01ABC, U02DEF";
-//   NOTIFY_EMAIL   email addresses, comma separated; DUE_ALERT_OVER  the limit (default 20).
+//   SLACK_BOT_TOKEN  the app's Bot User OAuth Token (xoxb-...; scopes chat:write and chat:write.public)
+//   SLACK_CHANNEL    channel ID for channel posts (#ordering-receiving)    REMINDER_DM  member IDs, e.g. "U01ABC, U02DEF"
+//   REMINDER_IN_CHANNEL  "yes" or "no" (default no)    NOTIFY_SLACK  member IDs to @-mention in the channel
+//   NOTIFY_EMAIL     email addresses, comma separated    DUE_ALERT_OVER  the limit (default 20)
 var PAGE_URL = 'https://wenhao-shao.github.io/Lab-Inventory/';
 var NOTIFY_ = [];
 function prop_(k) { return PropertiesService.getScriptProperties().getProperty(k) || ''; }
@@ -184,24 +187,28 @@ function mentions_() { return list_(prop_('NOTIFY_SLACK')).map(function (id) { r
 function dueOver_() { var n = Number(prop_('DUE_ALERT_OVER')); return n > 0 ? Math.floor(n) : 20; }
 /** Text from the page, made safe for Slack: no links, mentions or @channel can be slipped in. */
 function slackText_(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-/** Posts to the webhook's channel. True when Slack took it; false (and logged) when it did not or no webhook is set. */
-function slack_(text) {
-  var url = prop_('SLACK_WEBHOOK');
-  if (!url) return false;
+/** Posts as the app to a channel ID, or to a member ID (a direct message from the app). Returns '' when Slack took it, else
+ *  the reason (also logged): "no token set", "channel_not_found", "invalid_auth", ... */
+function slackPost_(to, text) {
+  var tok = prop_('SLACK_BOT_TOKEN');
+  if (!tok) return 'no token set';
+  if (!to) return 'no channel or person set';
   try {
-    var r = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify({ text: text }), muteHttpExceptions: true });
-    if (r.getResponseCode() === 200) return true;
-    Logger.log('Slack answered ' + r.getResponseCode() + ': ' + r.getContentText());
-  } catch (e) { Logger.log('Slack: ' + e); }
-  return false;
+    var r = UrlFetchApp.fetch('https://slack.com/api/chat.postMessage', { method: 'post', contentType: 'application/json; charset=utf-8',
+      headers: { Authorization: 'Bearer ' + tok }, payload: JSON.stringify({ channel: to, text: text, unfurl_links: false }), muteHttpExceptions: true });
+    var d = JSON.parse(r.getContentText() || '{}');
+    if (d.ok) return '';
+    Logger.log('Slack to ' + to + ': ' + (d.error || r.getResponseCode()));
+    return String(d.error || 'HTTP ' + r.getResponseCode());
+  } catch (e) { Logger.log('Slack: ' + e); return String(e); }
 }
 function sendQueued_() {
   var q = NOTIFY_; NOTIFY_ = [];
   q.forEach(function (x) {
     if (!x.reminder) return;
-    var r = x.reminder, who = mentions_();
-    slack_(':memo: New inventory reminder from *' + slackText_(r.by) + '*: ' + slackText_(r.text) + (who ? '\n' + who : '') +
-      '\n<' + PAGE_URL + '#reminders|Open Reminders>');
+    var r = x.reminder, line = 'New inventory reminder from *' + slackText_(r.by) + '*: ' + slackText_(r.text), link = '<' + PAGE_URL + '#reminders|Open Reminders>';
+    list_(prop_('REMINDER_DM')).forEach(function (id) { slackPost_(id, ':memo: ' + line + '\n' + link); });
+    if (/^y/i.test(prop_('REMINDER_IN_CHANNEL'))) { var who = mentions_(); slackPost_(prop_('SLACK_CHANNEL'), ':memo: ' + line + (who ? '\n' + who : '') + '\n' + link); }
   });
 }
 
@@ -245,7 +252,7 @@ function dueAlertFor_(ss, force) {
   if (!force && last && Date.now() - last < 7 * 864e5)
     return { sent: false, n: n, why: n + ' due; the alert was already sent on ' + Utilities.formatDate(new Date(last), ss.getSpreadsheetTimeZone(), 'MMM d') + ' and goes again a week after that.' };
   var names = due.map(dueLine_), head = names.slice(0, 15), rest = names.length - head.length, who = mentions_();
-  var slackOk = slack_(':clipboard: *' + n + ' inventory items are due to check.*' + (who ? ' ' + who : '') +
+  var slackErr = slackPost_(prop_('SLACK_CHANNEL'), ':clipboard: *' + n + ' inventory items are due to check.*' + (who ? ' ' + who : '') +
     ' When you have a moment, please open <' + PAGE_URL + '|the inventory>, choose *Due to check*, and report on each one; any report (a count, Low, Out, Ordered or No need) counts as its check.\n' +
     slackText_(head.join(' · ')) + (rest > 0 ? ' · and ' + rest + ' more' : ''));
   var to = list_(prop_('NOTIFY_EMAIL')), mailOk = false;
@@ -259,8 +266,9 @@ function dueAlertFor_(ss, force) {
       mailOk = true;
     } catch (e) { Logger.log('Email: ' + e); }
   }
+  var slackOk = !slackErr;
   if (slackOk || mailOk) props.setProperty('DUE_ALERT_SENT', String(Date.now()));
-  return { sent: slackOk || mailOk, n: n, why: n + ' due. Slack: ' + (slackOk ? 'sent' : prop_('SLACK_WEBHOOK') ? 'failed (see Executions)' : 'no webhook set') +
+  return { sent: slackOk || mailOk, n: n, why: n + ' due. Slack: ' + (slackOk ? 'posted' : 'not posted (' + slackErr + ')') +
     '. Email: ' + (mailOk ? 'sent to ' + to.join(', ') : to.length ? 'failed (see Executions)' : 'no address set') + '.' };
 }
 
@@ -268,36 +276,45 @@ function setNotifications() {
   var ui = SpreadsheetApp.getUi(), props = PropertiesService.getScriptProperties();
   function ask(title, text, key, check) {
     var cur = props.getProperty(key) || '';
-    var a = ui.prompt(title, text + '\n\nNow: ' + (key === 'SLACK_WEBHOOK' ? (cur ? 'set' : 'not set') : (cur || 'not set')) + '. Leave empty to keep it; type "none" to clear it.', ui.ButtonSet.OK_CANCEL);
+    var a = ui.prompt(title, text + '\n\nNow: ' + (key === 'SLACK_BOT_TOKEN' ? (cur ? 'set' : 'not set') : (cur || 'not set')) + '. Leave empty to keep it; type "none" to clear it.', ui.ButtonSet.OK_CANCEL);
     if (a.getSelectedButton() !== ui.Button.OK) return false;
     var v = a.getResponseText().trim();
     if (!v) return true;
     if (v.toLowerCase() === 'none') { props.deleteProperty(key); return true; }
-    if (check && !check(v)) { ui.alert('Not saved: that does not look right. Nothing else was changed after this step.'); return false; }
+    if (check && !check(v)) { ui.alert('Not saved: that does not look right. The steps after this one were not shown.'); return false; }
     props.setProperty(key, v); return true;
   }
-  if (!ask('Slack webhook', 'The Incoming Webhook URL for #ordering-receiving (it starts with https://hooks.slack.com/). Each new reminder is posted there.', 'SLACK_WEBHOOK',
-      function (v) { return /^https:\/\/hooks\.slack\.com\/\S+$/.test(v); })) return;
-  if (!ask('Who to @-mention in Slack', 'Slack member IDs, separated by commas (a member ID starts with U; find it in their Slack profile, More, Copy member ID).', 'NOTIFY_SLACK',
-      function (v) { return list_(v).every(function (x) { return /^[UW][A-Z0-9]{6,}$/.test(x); }); })) return;
-  if (!ask('Who gets the Due to check email', 'Email addresses, separated by commas.', 'NOTIFY_EMAIL',
+  function ids(v) { return list_(v).every(function (x) { return /^[UW][A-Z0-9]{6,}$/.test(x); }); }
+  if (!ask('1/7 Slack bot token', 'The Bot User OAuth Token of the Slack app (it starts with xoxb-). Slack: your app, OAuth & Permissions.', 'SLACK_BOT_TOKEN',
+      function (v) { return /^xoxb-[\w-]+$/.test(v); })) return;
+  if (!ask('2/7 Reminders: direct message to', 'Slack member IDs that get a direct message for each new reminder, separated by commas (a member ID starts with U; Slack: their profile, More, Copy member ID).', 'REMINDER_DM', ids)) return;
+  if (!ask('3/7 Reminders: also post in the channel?', 'yes or no. While testing, no.', 'REMINDER_IN_CHANNEL', function (v) { return /^(yes|no)$/i.test(v); })) return;
+  if (!ask('4/7 Channel', 'The channel ID for channel posts (#ordering-receiving). It starts with C; Slack: the channel name, About, at the bottom.', 'SLACK_CHANNEL',
+      function (v) { return /^[CG][A-Z0-9]{6,}$/.test(v); })) return;
+  if (!ask('5/7 Who to @-mention in the channel', 'Slack member IDs, separated by commas: mentioned in the Due to check alert (and in channel reminder posts, if those are on).', 'NOTIFY_SLACK', ids)) return;
+  if (!ask('6/7 Who gets the Due to check email', 'Email addresses, separated by commas.', 'NOTIFY_EMAIL',
       function (v) { return list_(v).every(function (x) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); }); })) return;
-  if (!ask('When to send the Due to check alert', 'Send it when MORE than this many items are due to check (default 20).', 'DUE_ALERT_OVER',
+  if (!ask('7/7 When to send the Due to check alert', 'Send it when MORE than this many items are due to check (default 20).', 'DUE_ALERT_OVER',
       function (v) { return /^\d+$/.test(v) && Number(v) > 0; })) return;
+  props.deleteProperty('SLACK_WEBHOOK');   // the webhook of the first version is not used
   ui.alert('Saved.\n\n' + notifyStatus_() + '\n\nNext: Notifications > Send a test.');
 }
 function notifyStatus_() {
   var on = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'dueAlert'; });
-  return 'Slack webhook: ' + (prop_('SLACK_WEBHOOK') ? 'set' : 'not set') + '\nSlack @-mentions: ' + (list_(prop_('NOTIFY_SLACK')).length || 'none') +
+  return 'Slack bot token: ' + (prop_('SLACK_BOT_TOKEN') ? 'set' : 'not set') +
+    '\nNew reminders: direct message to ' + (list_(prop_('REMINDER_DM')).join(', ') || 'nobody') + '; in the channel: ' + (/^y/i.test(prop_('REMINDER_IN_CHANNEL')) ? 'yes' : 'no') +
+    '\nChannel: ' + (prop_('SLACK_CHANNEL') || 'not set') + '; @-mentions there: ' + (list_(prop_('NOTIFY_SLACK')).join(', ') || 'none') +
     '\nDue to check email to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody') + '\nDue to check alert: more than ' + dueOver_() + ' items, daily check ' + (on ? 'on' : 'off');
 }
-/** A Slack post that mentions nobody, and an email to you only. */
+/** A direct message to one member ID you give (your own, so nobody else is pinged), and an email to you. Nothing in the channel. */
 function testNotifications() {
   var ui = SpreadsheetApp.getUi(), me = Session.getEffectiveUser().getEmail();
-  var ok = slack_(':white_check_mark: Test from the lab inventory. New reminders will be posted here' + (list_(prop_('NOTIFY_SLACK')).length ? ', mentioning ' + list_(prop_('NOTIFY_SLACK')).length + ' people' : '') + '.');
+  var a = ui.prompt('Send a test', 'The Slack member ID to send a test direct message to: yours, so nobody else is pinged (Slack: your profile, More, Copy member ID).', ui.ButtonSet.OK_CANCEL);
+  if (a.getSelectedButton() !== ui.Button.OK) return;
+  var to = a.getResponseText().trim(), err = /^[UW][A-Z0-9]{6,}$/.test(to) ? slackPost_(to, ':white_check_mark: Test from the lab inventory. New reminders will come as direct messages like this one to: ' + (list_(prop_('REMINDER_DM')).join(', ') || 'nobody yet') + '.') : 'that is not a member ID';
   var mail = false;
   try { MailApp.sendEmail(me, 'Lab inventory: test', 'This is how the Due to check email will arrive. It goes to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody yet') + '.'); mail = true; } catch (e) { Logger.log(e); }
-  ui.alert('Slack: ' + (ok ? 'posted (look in the channel)' : prop_('SLACK_WEBHOOK') ? 'did not go through; check the webhook URL' : 'no webhook set') + '\nEmail: ' + (mail ? 'sent to you (' + me + ')' : 'did not go through'));
+  ui.alert('Slack: ' + (err ? 'not sent (' + err + ')' : 'sent; look under Apps in Slack') + '\nEmail: ' + (mail ? 'sent to you (' + me + ')' : 'did not go through'));
 }
 function dueCheckNow() {
   var ui = SpreadsheetApp.getUi(), ss = SpreadsheetApp.getActiveSpreadsheet(), due = dueItems_(ss), over = dueOver_();
