@@ -42,9 +42,10 @@ var OPT_TYPES = ['t', 't', 't', 't', 't', 'n', 't', 'p', 'b', 't', 't', 't', 't'
 var OPT_KEPT = ['hidden', 'bought', 'last'];   // set by the purchase records, not edited in the page
 
 // Stock per size: one row per item and size that has been reported on, or that was made without a vendor row.
-var SIZE_COLS = ['Item ID', 'Size', 'Status', 'Status date', 'Status by', 'Status note', 'Current level'];
-var SIZE_KEYS = ['item', 'size', 'status', 'statusAt', 'statusBy', 'statusNote', 'level'];
-var SIZE_TYPES = ['t', 't', 't', 't', 't', 't', 'n'];
+// "Recheck by/date": someone asked for this size to be counted again; it is on Due to check until the next report on it.
+var SIZE_COLS = ['Item ID', 'Size', 'Status', 'Status date', 'Status by', 'Status note', 'Current level', 'Recheck by', 'Recheck date'];
+var SIZE_KEYS = ['item', 'size', 'status', 'statusAt', 'statusBy', 'statusNote', 'level', 'flagBy', 'flagAt'];
+var SIZE_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't'];
 var STATUS_RANK = { 'Out': 6, 'Low': 5, 'Ordered': 4, 'OK': 3, 'No need': 2 };
 
 var EVENT_COLS = ['Date', 'Item ID', 'Item', 'Event', 'Reported by', 'Note'];
@@ -87,6 +88,7 @@ function onOpen() {
   if (typeof applyChanges1028 === 'function') menu.addItem('11. Sizes for gloves, dropper bulb, PTFE filter paper (28 Oct)', 'applyChanges1028');
   if (typeof applyChanges1028b === 'function') menu.addItem('12. A size for every item (28 Oct)', 'applyChanges1028b');
   if (typeof applyChanges1028c === 'function') menu.addItem('13. Reorganise sizes (28 Oct)', 'applyChanges1028c');
+  if (typeof applyChanges1028d === 'function') menu.addItem('14. Heating block sizes (28 Oct)', 'applyChanges1028d');
   menu.addToUi();
 }
 
@@ -209,6 +211,7 @@ function handle_(body) {
       else if (action === 'addSize') patch = addSize_(ss, body);
       else if (action === 'deleteSize') patch = deleteSize_(ss, body);
       else if (action === 'renameSize') patch = renameSize_(ss, body);
+      else if (action === 'recheck') patch = recheck_(ss, body, user);
       else throw fail_('invalid', 'Unknown action.');
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
@@ -256,6 +259,7 @@ function report_(ss, body, user) {
  *  worst status of the sizes on show (Out, Low, Ordered, OK, No need). The note in the stock event names the size. */
 function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note) {
   var id = String(body.itemId), key = text_(body.sizeKey, 80), sh = tab_(ss, TABS.sizes, SIZE_COLS, SIZE_TYPES);
+  cols_(sh, SIZE_COLS);
   var all = sizeRows_(sh), mine = all.filter(function (r) { return r.item === id; });
   var srow = mine.filter(function (r) { return r.size === key; })[0];
   var opts = rows_(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES).filter(function (o) { return o.item === id; });
@@ -269,7 +273,7 @@ function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, u
   else if (ev === 'Low' || ev === 'Stock') { if (given != null) level = given; }
   if (ev === 'Stock') status = given === 0 ? 'Out' : (cur.min != null && given < cur.min ? 'Low' : 'OK');
   var bare = note.indexOf(' · ') >= 0 && text_(body.size, 80) ? note.slice(note.indexOf(' · ') + 3) : (text_(body.size, 80) ? '' : note);
-  var next = { item: id, size: key, status: status, statusAt: when, statusBy: user, statusNote: bare, level: level };
+  var next = { item: id, size: key, status: status, statusAt: when, statusBy: user, statusNote: bare, level: level, flagBy: '', flagAt: '' };   // any report clears a recheck
   if (srow) write_(sh, srow._row, [toRow_(next, SIZE_KEYS, SIZE_TYPES)], SIZE_TYPES);
   else { append_(sh, toRow_(next, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES); mine.push(next); }
   mine = mine.map(function (r) { return r.size === key ? next : r; });
@@ -277,7 +281,7 @@ function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, u
   // The item's own status: the worst of the sizes on show (a size is on show when a row of it is starred or it has no rows).
   var anyStar = opts.some(function (o) { return o.pref; }), shown = {};
   opts.forEach(function (o) { if (o.pref || !anyStar) shown[o.size || ''] = true; });
-  mine.forEach(function (r) { if (r.size === key ? (status === 'Low' || status === 'Out' || status === 'Ordered') : (r.status === 'Low' || r.status === 'Out' || r.status === 'Ordered')) shown[r.size] = true; });   // an open report never hides
+  mine.forEach(function (r) { if (r.size === key ? (status === 'Low' || status === 'Out' || status === 'Ordered') : (r.status === 'Low' || r.status === 'Out' || r.status === 'Ordered' || r.flagAt)) shown[r.size] = true; });   // an open report or a recheck never hides
   mine.forEach(function (r) { if (!opts.some(function (o) { return (o.size || '') === r.size; })) shown[r.size] = true; });
   var worst = '', parts = [];
   mine.forEach(function (r) {
@@ -291,6 +295,26 @@ function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, u
   var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = next[k]; });
   return { item: { id: id, status: worst || status, statusAt: when, statusBy: user, statusNote: sumNote, unit: unit }, sizeRow: sent,
            event: { at: when, item: id, name: cur.name, event: ev, by: user, note: note } };
+}
+
+/** Asks for a size to be counted again: it goes on Due to check until the next report on it. Logged in Stock events as "Recheck". */
+function recheck_(ss, body, user) {
+  var id = String(body.itemId || ''), key = text_(body.sizeKey, 80);
+  var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, id);
+  if (!row) throw fail_('not_found');
+  var sh = tab_(ss, TABS.sizes, SIZE_COLS, SIZE_TYPES); cols_(sh, SIZE_COLS);
+  var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES), when = now_(ss);
+  var r = sizeRows_(sh).filter(function (x) { return x.item === id && x.size === key; })[0];
+  if (r) { r.flagBy = user; r.flagAt = when; write_(sh, r._row, [toRow_(r, SIZE_KEYS, SIZE_TYPES)], SIZE_TYPES); delete r._row; }
+  else {   // an item without size rows yet: its own stock goes with the new row
+    r = { item: id, size: key, status: key === '' ? cur.status : '', statusAt: key === '' ? cur.statusAt : '', statusBy: key === '' ? cur.statusBy : '',
+          statusNote: key === '' ? cur.statusNote : '', level: key === '' ? cur.level : null, flagBy: user, flagAt: when };
+    append_(sh, toRow_(r, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES);
+  }
+  var note = text_(body.size, 80);
+  append_(ss.getSheetByName(TABS.events), [when, id, cur.name, 'Recheck', user, note], EVENT_TYPES);
+  var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = r[k]; });
+  return { sizeRow: sent, event: { at: when, item: id, name: cur.name, event: 'Recheck', by: user, note: note } };
 }
 
 /** Makes a size that has no vendor row yet (for example gloves size L), so it shows and can be reported on. */
@@ -498,7 +522,8 @@ function sizes_(ss) {
 function sizeRows_(sh) {
   var last = sh.getLastRow();
   if (last < 2) return [];
-  return sh.getRange(2, 1, last - 1, SIZE_KEYS.length).getValues().map(function (r, i) {
+  var width = Math.min(SIZE_KEYS.length, sh.getMaxColumns());
+  return sh.getRange(2, 1, last - 1, width).getValues().map(function (r, i) {
     var o = fromRow_(r, SIZE_KEYS, SIZE_TYPES); o._row = i + 2; return o;
   }).filter(function (r) { return r.item; });
 }

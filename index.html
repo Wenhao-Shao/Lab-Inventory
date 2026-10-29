@@ -260,7 +260,7 @@ var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solv
   "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","General supply","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
   "Pumps & vacuum","Heating & baths","Clamps, stands & supports","Asset","Benchtop equipment","Consumables"];
 var KINDS = ["Stocked","On hand","Asset","Price only"];
-var KIND_NOTE = { "On hand": "On hand; not on the reorder list", "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
+var KIND_NOTE = { "On hand": "On hand; not restocked as a routine", "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
 /* Type and Show come from the Sheet. A Sheet that has not been updated yet has neither, so fall back to the old "Stocked" column. */
 function kindOf(it){ return KINDS.indexOf(it.type) >= 0 ? it.type : (it.stocked === "Yes" || it.stocked === "Not set" || !it.stocked ? "Stocked" : "On hand"); }
 function showOf(it){ return it.show === "Price list" || it.show === "More" ? it.show : "Main"; }
@@ -338,7 +338,7 @@ function groupsOf(it){
   var gs = keys.map(function(k){
     var g = map[k], st = g.rows.filter(function(o){ return o.pref; });
     g.stock = stockOf(it, k);
-    g.shown = !anyStar || !g.rows.length || st.length > 0 || ["Low", "Out", "Ordered"].indexOf(stStatus(g.stock)) >= 0;   /* an open report never hides */
+    g.shown = !anyStar || !g.rows.length || st.length > 0 || ["Low", "Out", "Ordered"].indexOf(stStatus(g.stock)) >= 0 || !!g.stock.flagAt;   /* an open report or a recheck never hides */
     g.label = k || String((st[0] || g.rows[0] || {}).grade || "").trim() || "Standard";
     return g;
   });
@@ -347,6 +347,12 @@ function groupsOf(it){
 }
 function shownGroups(it){ return groupsOf(it).filter(function(g){ return g.shown; }); }
 function stStatus(st){ var s = st && st.status; return s ? (STATUS_OF[s] || s) : "None"; }
+/* The pill for a status. Without a minimum level there is nothing to call OK against, so a size with stock shows the item's type (Stocked, On hand, Asset). */
+function pillFor(it, s){
+  var k = kindOf(it);
+  if ((s === "OK" && typeof it.min !== "number") || (s === "None" && k !== "Stocked")) return {cls: "Kind", text: k};
+  return {cls: pillOf(s), text: statusLabel(s)};
+}
 function statusOf(it){
   var best = null;
   shownGroups(it).forEach(function(g){ var s = stStatus(g.stock); if (RANK[s] && (!best || RANK[s] > RANK[best])) best = s; });
@@ -397,7 +403,8 @@ function sizeCmp(a, b){
 }
 function daysSince(s){ if (!s) return Infinity; var d = new Date(String(s).replace(" ", "T")); return isNaN(d) ? Infinity : (Date.now() - d) / 864e5; }
 /* Due to check: the item has a check interval and a size on show whose last report (any report counts) is older than that, or that has none. */
-function isDue(it){ return typeof it.check === "number" && it.check > 0 && shownGroups(it).some(function(g){ return daysSince(g.stock.statusAt) >= it.check; }); }
+function isDue(it){ return shownGroups(it).some(function(g){ return !!g.stock.flagAt || (typeof it.check === "number" && it.check > 0 && daysSince(g.stock.statusAt) >= it.check); }); }
+function flagged(it){ return shownGroups(it).filter(function(g){ return g.stock.flagAt; }); }
 function oldestCheck(it){ var gs = shownGroups(it), o; for (var i = 0; i < gs.length; i++){ var a = gs[i].stock.statusAt || ""; if (!a) return ""; if (o === undefined || a < o) o = a; } return o || ""; }
 /* Web addresses become links named by their site ("amazon.com"). A vendor row can hold several, kept as "url ; url". */
 var URL_RE = /https?:\/\/[^\s;"'<>]+/gi;
@@ -583,7 +590,7 @@ function stamp(){ var d = new Date(), z = function(n){ return ("0" + n).slice(-2
 function localSize(it, key){
   var idx = S.sizeIdx[it.id] || {};
   if (idx[key]) return {row: idx[key], made: false};
-  var row = {item: it.id, size: key, status: "", statusAt: "", statusBy: "", statusNote: "", level: null};
+  var row = {item: it.id, size: key, status: "", statusAt: "", statusBy: "", statusNote: "", level: null, flagBy: "", flagAt: ""};
   S.sizeRows.push(row); indexSizes(); return {row: row, made: true};
 }
 function report(it, ev, d){
@@ -599,18 +606,33 @@ function report(it, ev, d){
     var ls = localSize(it, key); target = ls.row; if (ls.made) made.push(ls.row);
   }
   var label = useSize && g ? g.label : "";
-  var before = {status: target.status, statusAt: target.statusAt, statusBy: target.statusBy, statusNote: target.statusNote, level: target.level, unit: it.unit}, now = stamp();
+  var before = {status: target.status, statusAt: target.statusAt, statusBy: target.statusBy, statusNote: target.statusNote, level: target.level, unit: it.unit, flagBy: target.flagBy, flagAt: target.flagAt}, now = stamp();
   var oc = outcome(it, ev, Object.assign({}, d, {size: label}), target);
   var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note};
   Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); it.unit = oc.unit; S.events.unshift(le);
+  if (useSize){ target.flagBy = ""; target.flagAt = ""; }
   render(); sync("Saving…");
   var who = it.name + (label ? " (" + label + ")" : "");
   toast(ev === "Stock" ? who + ": " + oc.bare + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : who + " marked " + ev.toLowerCase());
   return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: label, sized: useSize, sizeKey: key, note: ""}, {localEvent: le}); }).catch(function(e){
     Object.assign(target, {status: before.status, statusAt: before.statusAt, statusBy: before.statusBy, statusNote: before.statusNote, level: before.level}); it.unit = before.unit;
+    if (useSize){ target.flagBy = before.flagBy || ""; target.flagAt = before.flagAt || ""; }
     if (made.length){ S.sizeRows = S.sizeRows.filter(function(r){ return made.indexOf(r) < 0; }); indexSizes(); }
     var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
     sync("Not saved"); render(); toast("Not saved, so the report was undone. " + problem(e), 9000);
+  });
+}
+/* Recheck: ask for a size to be counted again. It goes on Due to check until anyone reports on that size. */
+function recheck(it, g){
+  var key = g.key, ls = localSize(it, key), row = ls.row, before = {flagBy: row.flagBy, flagAt: row.flagAt}, now = stamp();
+  if (ls.made && key === "" && it.status) Object.assign(row, {status: it.status, statusAt: it.statusAt, statusBy: it.statusBy, statusNote: it.statusNote, level: it.level});
+  row.flagBy = S.name; row.flagAt = now;
+  var le = {at: now, item: it.id, name: it.name, event: "Recheck", by: S.name, note: g.label || ""}; S.events.unshift(le);
+  render(); toast(it.name + (g.label ? " (" + g.label + ")" : "") + " is on Due to check until someone reports on it"); sync("Saving…");
+  return enqueue(function(){ return api("recheck", {itemId: it.id, sizeKey: key, size: g.label || ""}, {localEvent: le}); }).catch(function(e){
+    if (ls.made){ S.sizeRows = S.sizeRows.filter(function(r){ return r !== row; }); indexSizes(); } else Object.assign(row, before);
+    var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
+    sync("Not saved"); render(); toast("Not saved: " + problem(e), 9000);
   });
 }
 /* One click on a star turns it on or off. Other rows keep their stars: an item can have several preferred vendor rows. */
@@ -851,7 +873,7 @@ function itemFields(adding, sizedItem){
     f = f.filter(function(x){ return x.k !== "level"; });   /* each size keeps its own count; report it on the size */
     f.forEach(function(x){ if (x.k === "min") x.label = "Minimum level (applies to each size)"; });
   }
-  if (adding) f = f.concat([{head: "Where to buy it (optional)"}].concat(optFields("o_").filter(function(x){ return x.k !== "o_pref"; })));
+  if (adding) f = f.concat([{head: "Where to buy it (optional)"}].concat(optFields("o_").filter(function(x){ return x.k !== "o_pref" && x.k !== "o_size"; })));
   return f;
 }
 function optFields(p, sizeNames){
@@ -861,7 +883,7 @@ function optFields(p, sizeNames){
     {k: p + "vendor", label: "Vendor", req: !p, list: vendors},
     {k: p + "catalog", label: "Catalog number"},
     {k: p + "grade", label: "Grade, size or spec"},
-    {k: p + "size", label: "Size category (rows with the same one are grouped; type a new one to start it)", list: sizeNames || []},
+    {k: p + "size", label: "Size category (a new one: Add size on the item first)", type: "select", options: (sizeNames || {keys: [""]}).keys, blank: (sizeNames || {}).blank || "Standard"},
     {k: p + "pack", label: "Pack size", type: "number"},
     {k: p + "unit", label: "Pack unit", type: "select", options: UNITS},
     {k: p + "price", label: "Price ($)", type: "number"},
@@ -925,7 +947,8 @@ function editOpt(it, o, presetSize){
       sync("Not saved"); render(); toast("Not removed, so the option is back. " + problem(e), 9000);
     });
   });
-  var names = groupsOf(it).map(function(g){ return g.key; }).filter(Boolean), first = shownGroups(it).filter(function(g){ return g.key; })[0];
+  var gsAll = groupsOf(it), unnamed = gsAll.filter(function(g){ return !g.key; })[0];
+  var names = {keys: gsAll.map(function(g){ return g.key; }), blank: unnamed ? unnamed.label : "Standard"}, first = shownGroups(it).filter(function(g){ return g.key; })[0];
   var start = o ? Object.assign({}, o, {link: linkList(o.link).join("\n")}) : {unit: it.unit || "g", pref: true, size: presetSize != null ? presetSize : (first ? first.key : "")};
   openSheet((adding ? "Add a vendor option for " : "Edit vendor option for ") + it.name, optFields("", names), start, function(v){
     /* Shows at once and saved in the background, like reports. A new row has no ID until the Sheet answers, so it cannot be edited or starred until then. */
@@ -1000,12 +1023,15 @@ function detail(it){
     if (!g.shown && !open) return;
     var rows = g.rows.filter(function(o){ return o.pref || !anyStar || open; }).sort(function(a, b){ return sizeCmp(a.grade || "", b.grade || "") || (b.pref ? 1 : 0) - (a.pref ? 1 : 0); });
     {
+      var pf = pillFor(it, stStatus(g.stock));
       var head = h("div", {class: "sizehead"}, h("span", {class: "sz", text: g.label}),
-        h("span", {class: "pill " + pillOf(stStatus(g.stock)), text: statusLabel(stStatus(g.stock))}), h("span", {class: "note", text: stockLine(it, g)}));
+        h("span", {class: "pill " + pf.cls, text: pf.text}), h("span", {class: "note", text: stockLine(it, g)}));
+      if (g.stock.flagAt) head.appendChild(h("span", {class: "pill Due", title: "Someone asked for this size to be counted again; any report clears it", text: "Recheck · " + (g.stock.flagBy || "") + " " + day(g.stock.flagAt)}));
       if (!g.shown) head.appendChild(h("span", {class: "note", text: "hidden: star a row to show this size"}));
       if (S.canWrite){
         var ba = h("span", {class: "acts"});
         if (g.shown) reportButtons(it, g).forEach(function(b){ ba.appendChild(b); });
+        if (g.shown && !g.stock.flagAt) ba.appendChild(h("button", {class: "btn small ghost", type: "button", title: "Ask for this size to be counted again: it goes on Due to check until someone reports on it", text: "Recheck", onclick: function(){ recheck(it, g); }}));
         ba.appendChild(h("button", {class: "btn small ghost", type: "button", title: "Rename this size", "aria-label": "Rename the size " + g.label, text: "✎", onclick: function(){ renameSize(it, g); }}));
         head.appendChild(ba);
       }
@@ -1075,7 +1101,8 @@ function renderDue(){
     card.appendChild(h("div", {class: "note", text: "The list below shows only these items. Any report (Report stock, Low, Out, Ordered or No need) counts as a check; an item with several sizes needs one on each size it shows."}));
     card.appendChild(h("div", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "Show everything again", onclick: function(){ S.status = "all"; S.open = null; render(); }})));
   } else {
-    card.appendChild(h("div", {class: "note", text: "Not checked within their interval, or never. Open one and report on it; any report counts as its check."}));
+    var nf = due.filter(function(it){ return flagged(it).length; }).length;
+    card.appendChild(h("div", {class: "note", text: "Not checked within their interval, or never" + (nf ? ", or flagged for a recheck (" + nf + ")" : "") + ". Open one and report on it; any report counts as its check."}));
     var names = h("div", {class: "names"});
     due.slice(0, 8).forEach(function(it){
       names.appendChild(h("button", {class: "chip", type: "button", text: it.name, onclick: function(){
@@ -1126,8 +1153,8 @@ function renderItems(){
     var s = statusOf(it), k = kindOf(it), p = bestOf(it), open = S.open === it.id, nOpt = (it.opts || []).length;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
     wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
-      h("span", {class: "st" + (S.isAdmin && isDue(it) ? " isdue" : "")}, h("span", {class: "pill " + (s === "None" && k !== "Stocked" ? "Kind" : pillOf(s)), text: s === "None" && k !== "Stocked" ? k : statusLabel(s)}),
-        S.isAdmin && isDue(it) ? h("span", {class: "pill Due", title: "Due to check: report on it (Report stock, Low, Out, Ordered or No need)", text: "Due"}) : null),
+      h("span", {class: "st" + (S.isAdmin && isDue(it) ? " isdue" : "")}, (function(){ var pf = pillFor(it, s); return h("span", {class: "pill " + pf.cls, text: pf.text}); })(),
+        S.isAdmin && isDue(it) ? h("span", {class: "pill Due", title: flagged(it).length ? "Recheck asked by " + flagged(it).map(function(g){ return (g.stock.flagBy || "someone") + (g.label ? " (" + g.label + ")" : ""); }).join(", ") : "Due to check: report on it (Report stock, Low, Out, Ordered or No need)", text: "Due"}) : null),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
         h("div", {class: "meta"}, [it.loc, rowStock(it), it.lead ? "long lead time" : ""].filter(Boolean).join(" · "))),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
