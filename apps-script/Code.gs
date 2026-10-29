@@ -97,6 +97,7 @@ function onOpen() {
   if (typeof applyChanges1028c === 'function') menu.addItem('13. Reorganise sizes (28 Oct)', 'applyChanges1028c');
   if (typeof applyChanges1028d === 'function') menu.addItem('14. Heating block sizes (28 Oct)', 'applyChanges1028d');
   if (typeof applyChanges1029 === 'function') menu.addItem('15. Merge On hand into Stocked (29 Oct)', 'applyChanges1029');
+  if (typeof applyChanges1029b === 'function') menu.addItem('16. Solvent locations (29 Oct)', 'applyChanges1029b');
   menu.addToUi();
 }
 
