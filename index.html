@@ -638,15 +638,16 @@ function report(it, ev, d){
   }
   var label = useSize && g ? g.label : "";
   var before = {status: target.status, statusAt: target.statusAt, statusBy: target.statusBy, statusNote: target.statusNote, level: target.level, unit: it.unit, flagBy: target.flagBy, flagAt: target.flagAt}, now = stamp();
-  var oc = outcome(it, ev, Object.assign({}, d, {size: label}), target);
+  var oc = outcome(it, ev, Object.assign({}, d, {size: label}), target), locWas = it.loc;
+  if (d.loc){ oc.note += " · kept at " + d.loc; if (d.loc !== String(it.loc || "").trim()){ it.loc = d.loc; delete it._hay; } }
   var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note};
   Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); it.unit = oc.unit; S.events.unshift(le);
   if (useSize){ target.flagBy = ""; target.flagAt = ""; }
   render(); sync("Saving…");
   var who = it.name + (label ? " (" + label + ")" : "");
   toast(ev === "Stock" ? who + ": " + oc.bare + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : who + " marked " + ev.toLowerCase());
-  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: label, sized: useSize, sizeKey: key, note: ""}, {localEvent: le}); }).catch(function(e){
-    Object.assign(target, {status: before.status, statusAt: before.statusAt, statusBy: before.statusBy, statusNote: before.statusNote, level: before.level}); it.unit = before.unit;
+  return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: label, sized: useSize, sizeKey: key, note: "", loc: d.loc}, {localEvent: le}); }).catch(function(e){
+    Object.assign(target, {status: before.status, statusAt: before.statusAt, statusBy: before.statusBy, statusNote: before.statusNote, level: before.level}); it.unit = before.unit; it.loc = locWas; delete it._hay;
     if (useSize){ target.flagBy = before.flagBy || ""; target.flagAt = before.flagAt || ""; }
     if (made.length){ S.sizeRows = S.sizeRows.filter(function(r){ return made.indexOf(r) < 0; }); indexSizes(); }
     var at = S.events.indexOf(le); if (at >= 0) S.events.splice(at, 1);
@@ -782,8 +783,14 @@ function askStock(it, g){
       (has ? "; the last count was " + amount(st.level, it.unit) : "") +
       (fits ? ". Filled in " + amount(start, unit) + ": correct it if the delivery or the shelf is different." : ". Count what is on the shelf now, including the delivery.")});
   }
-  openSheet((o ? "Order arrived: stock of " : "Stock of ") + whoOf(it, g), fields.concat([{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")]),
-    {unit: unit, level: start}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit, g: g}); });
+  fields = fields.concat([{k: "level", label: "How much is on the shelf now", type: "number", req: true}, unitField(it, "unit")]);
+  /* An order that arrived: also where it was put (29 Oct 2026). Filled in with where the item is kept; change it if it went elsewhere. */
+  if (o){
+    var locs = []; S.items.forEach(function(x){ if (x.loc && locs.indexOf(x.loc) < 0) locs.push(x.loc); });
+    fields.push({k: "loc", label: "Where it is kept now (check it; change it if you put it elsewhere)", list: locs, req: true, wide: true});
+  }
+  openSheet((o ? "Order arrived: stock of " : "Stock of ") + whoOf(it, g), fields,
+    {unit: unit, level: start, loc: it.loc || ""}, function(v){ report(it, "Stock", {level: v.level, unit: v.unit, g: g, loc: o ? String(v.loc || "").trim() : undefined}); });
 }
 function askOrdered(it, g){
   g = onlyGroup(it, g);
@@ -911,8 +918,8 @@ function openSheet(title, fields, values, onSave, extra){
   var form = h("form", {novalidate: true, onsubmit: function(ev){
     ev.preventDefault();
     var out = {}, bad = null;
-    fields.forEach(function(f){ if (f.head || f.note) return; out[f.k] = readField(f); if (f.req && (f.type === "number" ? out[f.k] == null : !out[f.k])) bad = bad || f.label; if (f.type === "number" && out[f.k] != null && !(out[f.k] >= 0)) bad = bad || f.label; });
-    if (bad){ err.textContent = bad + " is missing or not a valid number."; return; }
+    fields.forEach(function(f){ if (f.head || f.note) return; out[f.k] = readField(f); if (f.req && (f.type === "number" ? out[f.k] == null : !String(out[f.k] || "").trim())) bad = bad || f; if (f.type === "number" && out[f.k] != null && !(out[f.k] >= 0)) bad = bad || f; });
+    if (bad){ err.textContent = bad.label.replace(/\s*\(.*\)\s*$/, "") + (bad.type === "number" ? " is missing or not a valid number." : " is missing."); return; }
     btn.disabled = true; err.textContent = "";
     Promise.resolve().then(function(){ return onSave(out); }).then(closeSheet, function(e){ btn.disabled = false; var m = problem(e); if (!S.locked) err.textContent = m; });
   }}, h("h2", {text: title}), grid, err,

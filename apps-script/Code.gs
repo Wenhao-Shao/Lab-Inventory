@@ -433,10 +433,21 @@ function report_(ss, body, user) {
     var qty = num_(body.qty), qunit = text_(body.qunit, 16);
     if (qty != null) note = 'Ordered ' + amount(qty, qunit);
   }
+  // An order that arrived (29 Oct 2026): the count comes with where it is kept. The location goes in the note, and a new one
+  // replaces the item's (logged as an Edit).
+  var loc = ev === 'Stock' && body.loc != null ? text_(body.loc, 120) : null;
+  if (loc === '') throw fail_('invalid', 'Say where it is kept.');
+  if (loc) note += ' · kept at ' + loc;
   var size = text_(body.size, 80);   // the size's name, written at the start of the note
   if (size) note = size + (note ? ' · ' + note : '');
-  if (body.sized && body.sizeKey != null) return sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note);
-  return plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note);
+  var p = body.sized && body.sizeKey != null ? sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note)
+    : plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note);
+  if (loc && loc !== String(cur.loc || '').trim()) {
+    write_(items, row, [[loc]], ['t'], ITEM_KEYS.indexOf('loc') + 1);
+    log_(ss, cur.id, cur.name, 'Edit', user, 'Location: ' + (cur.loc || '(empty)') + ' → ' + loc + ' (order arrived)');
+    p.item.loc = loc;
+  }
+  return p;
 }
 
 /** A report on an item without sizes: the item's own status columns change. */
