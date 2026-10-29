@@ -9,8 +9,8 @@
  *   2. Set passcodes    (one passcode that can edit, one that can only read)
  * Then Deploy > New deployment > Web app (Execute as: Me, Access: Anyone).
  *
- * Item "Type": Stocked (reordered when low), On hand (in the lab, never flagged),
- * Asset (equipment), Price only (a price on file, nothing bought).
+ * Item "Type": Stocked (kept in the lab; with a minimum level a count makes it OK or Low, without one it shows as Stocked),
+ * Asset (equipment), Price only (a price on file, nothing bought). "On hand" was merged into Stocked on 29 Oct 2026.
  * Item "Current level": the amount last reported on the shelf, in the item's unit. It is the last count
  * someone typed in, not a live number: nothing lowers it when people use the item.
  * Item "Check every (days)": how often someone should look at the item and report on it. Empty means no routine
@@ -33,7 +33,7 @@ var ITEM_KEYS = ['id', 'name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'stock
   'lead', 'exp', 'spec', 'source', 'notes', 'status', 'statusAt', 'statusBy', 'statusNote', 'type', 'show', 'level', 'check'];
 var ITEM_TYPES = ['t', 't', 't', 't', 't', 't', 'n', 't', 't', 'b', 'b', 't', 't', 't', 't', 't', 't', 't', 't', 't', 'n', 'n'];
 var ITEM_EDITABLE = ['name', 'aka', 'cas', 'cat', 'loc', 'min', 'unit', 'type', 'lead', 'exp', 'spec', 'notes', 'level', 'check'];
-var ITEM_KINDS = ['Stocked', 'On hand', 'Asset', 'Price only'];
+var ITEM_KINDS = ['Stocked', 'Asset', 'Price only'];   // "On hand" (until 29 Oct 2026) reads as Stocked
 
 var OPT_COLS = ['Option ID', 'Item ID', 'Vendor', 'Catalog #', 'Grade', 'Pack size', 'Pack unit', 'Price ($)',
   'Preferred', 'Price note', 'Alternative catalog #', 'Price checked on', 'Comment', 'Link', 'Hidden in price list', 'Times bought', 'Last bought', 'Size'];
@@ -90,6 +90,7 @@ function onOpen() {
   if (typeof applyChanges1028b === 'function') menu.addItem('12. A size for every item (28 Oct)', 'applyChanges1028b');
   if (typeof applyChanges1028c === 'function') menu.addItem('13. Reorganise sizes (28 Oct)', 'applyChanges1028c');
   if (typeof applyChanges1028d === 'function') menu.addItem('14. Heating block sizes (28 Oct)', 'applyChanges1028d');
+  if (typeof applyChanges1029 === 'function') menu.addItem('15. Merge On hand into Stocked (29 Oct)', 'applyChanges1029');
   menu.addToUi();
 }
 
@@ -199,6 +200,9 @@ function handle_(body) {
   // The read-only passcode can do two things (29 Oct 2026): say a size looks low (suspectLow: the stock is not changed; the
   // size goes on Due to check and a "Please check" reminder is added), and add a reminder about one item.
   extra.suspectLow = role === 'read'; extra.readReminder = role === 'read';
+  LOG_ = [];
+  // Older activity, or a search of all of it: any passcode (29 Oct 2026).
+  if (action === 'events') return Object.assign({ ok: true, role: role }, extra, eventsPage_(ss, body));
   if (action !== 'load') {
     var readOk = action === 'suspectLow' || (action === 'addReminder' && !!body.itemId);
     if (role === 'read' ? !readOk : role !== 'edit' && role !== 'admin') throw fail_('read_only');
@@ -209,21 +213,22 @@ function handle_(body) {
     try {
       if (action === 'report') patch = report_(ss, body, user);
       else if (action === 'suspectLow') patch = suspectLow_(ss, body, user);
-      else if (action === 'addItem') { patch = addItem_(ss, body, role); extra.newId = patch.add.id; }
-      else if (action === 'updateItem') patch = updateItem_(ss, body, role);
-      else if (action === 'saveOption') patch = saveOption_(ss, body);
-      else if (action === 'deleteOption') patch = deleteOption_(ss, body);
+      else if (action === 'addItem') { patch = addItem_(ss, body, role, user); extra.newId = patch.add.id; }
+      else if (action === 'updateItem') patch = updateItem_(ss, body, role, user);
+      else if (action === 'saveOption') patch = saveOption_(ss, body, user);
+      else if (action === 'deleteOption') patch = deleteOption_(ss, body, user);
       else if (action === 'deleteItem') patch = deleteItem_(ss, body, user);
       else if (action === 'addReminder') patch = addReminder_(ss, body, user, role === 'read');
       else if (action === 'checkReminder' || action === 'deleteReminder') {
         if (!extra.canTick) throw fail_('admin_only', 'Only the admin passcode ticks off or removes reminders.');
-        patch = action === 'checkReminder' ? checkReminder_(ss, body, user) : deleteReminder_(ss, body);
+        patch = action === 'checkReminder' ? checkReminder_(ss, body, user) : deleteReminder_(ss, body, user);
       }
-      else if (action === 'addSize') patch = addSize_(ss, body);
-      else if (action === 'deleteSize') patch = deleteSize_(ss, body);
-      else if (action === 'renameSize') patch = renameSize_(ss, body);
+      else if (action === 'addSize') patch = addSize_(ss, body, user);
+      else if (action === 'deleteSize') patch = deleteSize_(ss, body, user);
+      else if (action === 'renameSize') patch = renameSize_(ss, body, user);
       else if (action === 'recheck') patch = recheck_(ss, body, user);
       else throw fail_('invalid', 'Unknown action.');
+      if (patch && LOG_.length) patch.log = LOG_;   // what this change wrote to the activity log
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
     if (lean) return Object.assign({ ok: true, role: role, patch: patch }, extra);
@@ -365,20 +370,20 @@ function recheck_(ss, body, user, eventNote) {
 }
 
 /** Makes a size that has no vendor row yet (for example gloves size L), so it shows and can be reported on. */
-function addSize_(ss, body) {
+function addSize_(ss, body, user) {
   var id = String(body.itemId || ''), key = text_(body.size, 80);
   if (!key) throw fail_('invalid', 'Name the size first.');
   if (!findRow_(ss.getSheetByName(TABS.items), 1, id)) throw fail_('not_found');
   var sh = tab_(ss, TABS.sizes, SIZE_COLS, SIZE_TYPES);
   var have = sizeRows_(sh).filter(function (r) { return r.item === id && r.size === key; })[0];
   var r = have || { item: id, size: key, status: '', statusAt: '', statusBy: '', statusNote: '', level: null };
-  if (!have) append_(sh, toRow_(r, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES);
+  if (!have) { append_(sh, toRow_(r, SIZE_KEYS, SIZE_TYPES), SIZE_TYPES); log_(ss, id, itemName_(ss, id), 'Size added', user, key); }
   var sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = r[k]; });
   return { sizeRow: sent };
 }
 /** Renames a size: its vendor rows and its stock row move to the new name. Renaming an item's unnamed size (from "")
  *  names it, and the item's own stock goes with it. */
-function renameSize_(ss, body) {
+function renameSize_(ss, body, user) {
   var id = String(body.itemId || ''), from = text_(body.from, 80), to = text_(body.to, 80);
   if (!to) throw fail_('invalid', 'Name the size first.');
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, id);
@@ -403,17 +408,19 @@ function renameSize_(ss, body) {
     else out = null;
   }
   var sent = null; if (out) { sent = {}; SIZE_KEYS.forEach(function (k) { sent[k] = out[k]; }); }
+  if (to !== from) log_(ss, id, itemName_(ss, id), 'Size renamed', user, (from || '(unnamed)') + ' → ' + to);
   return { renamed: { item: id, from: from, to: to, row: sent } };
 }
 
 /** Removes a size's stock row. Its vendor rows, if any, keep their size name. */
-function deleteSize_(ss, body) {
+function deleteSize_(ss, body, user) {
   var id = String(body.itemId || ''), key = text_(body.size, 80), sh = ss.getSheetByName(TABS.sizes);
   if (sh) sizeRows_(sh).filter(function (r) { return r.item === id && r.size === key; }).reverse().forEach(function (r) { sh.deleteRow(r._row); });
+  log_(ss, id, itemName_(ss, id), 'Size removed', user, key || '(unnamed)');
   return { delSize: { item: id, size: key } };
 }
 
-function addItem_(ss, body, role) {
+function addItem_(ss, body, role, user) {
   var it = cleanItem_(body.item || {});
   if (!it.name || !it.cat) throw fail_('invalid', 'Name and category are required.');
   var items = ss.getSheetByName(TABS.items), pre = PREFIX[it.cat] || 'GEN';
@@ -434,18 +441,19 @@ function addItem_(ss, body, role) {
     append_(opts, optRow_(o), OPT_TYPES);
     added.opts.push(sent_(o));
   }
+  log_(ss, it.id, it.name, 'Item added', user, [it.cat, it.type, added.opts.length ? 'vendor ' + optLabel_(added.opts[0]) : ''].filter(Boolean).join(' · '));
   return { add: added };
 }
 
-function updateItem_(ss, body, role) {
+function updateItem_(ss, body, role, user) {
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.id);
   if (!row) throw fail_('not_found');
   cols_(items, ITEM_COLS);
   var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
-  if (ITEM_KINDS.indexOf(cur.type) < 0) cur.type = cur.stocked === 'Yes' ? 'Stocked' : 'On hand';
+  if (ITEM_KINDS.indexOf(cur.type) < 0) cur.type = 'Stocked';
   var next = cleanItem_(body.fields || {});
   if (!next.name || !next.cat) throw fail_('invalid', 'Name and category are required.');
-  var sent = body.fields || {};
+  var sent = body.fields || {}, was = Object.assign({}, cur);
   ITEM_EDITABLE.forEach(function (k) {
     if ((k === 'level' || k === 'check') && sent[k] === undefined) return;   // an older page does not send these
     cur[k] = next[k];
@@ -453,12 +461,15 @@ function updateItem_(ss, body, role) {
   // An edit never touches the report fields (status, statusAt, statusBy, statusNote), so it does not count as a check.
   kind_(cur);
   write_(items, row, [itemRow_(cur)], ITEM_TYPES);
+  var what = changes_(was, cur, ITEM_EDITABLE, ITEM_LABELS);
+  if (what) log_(ss, cur.id, cur.name, 'Edit', user, what);
   return { item: cur };
 }
 
-function saveOption_(ss, body) {
+function saveOption_(ss, body, user) {
   var items = ss.getSheetByName(TABS.items), opts = ss.getSheetByName(TABS.opts);
   if (!findRow_(items, 1, body.itemId)) throw fail_('not_found');
+  var old = null;
   var o = cleanOpt_(body.opt || {});
   if (!o.vendor) throw fail_('invalid', 'Vendor is required.');
   o.item = String(body.itemId);
@@ -466,7 +477,7 @@ function saveOption_(ss, body) {
   if (body.oid && !row) throw fail_('not_found');
   if (row) {
     cols_(opts, OPT_COLS);
-    var old = fromRow_(opts.getRange(row, 1, 1, OPT_KEYS.length).getValues()[0], OPT_KEYS, OPT_TYPES);
+    old = fromRow_(opts.getRange(row, 1, 1, OPT_KEYS.length).getValues()[0], OPT_KEYS, OPT_TYPES);
     o.oid = old.oid; o.alt = old.alt;
     OPT_KEPT.forEach(function (k) { o[k] = old[k]; });
     if (o.link === undefined) o.link = old.link;   // a page from before 21 Oct does not send the link
@@ -479,6 +490,13 @@ function saveOption_(ss, body) {
   }
   // Several vendor rows of one item can be starred (21 Oct 2026), so a star here leaves the other rows alone.
   if (row) write_(opts, row, [optRow_(o)], OPT_TYPES); else append_(opts, optRow_(o), OPT_TYPES);
+  var name = itemName_(ss, o.item);
+  if (!old) log_(ss, o.item, name, 'Vendor added', user, optLabel_(o) + (o.price != null ? ' · $' + o.price : '') + (o.pref ? ' · starred' : ''));
+  else {
+    var what = changes_(old, o, OPT_LOGGED, OPT_LABELS), star = !!old.pref !== !!o.pref;
+    if (what) log_(ss, o.item, name, 'Vendor edited', user, optLabel_(o) + ' · ' + what + (star ? '; ' + (o.pref ? 'starred' : 'unstarred') : ''));
+    else if (star) log_(ss, o.item, name, o.pref ? 'Starred' : 'Unstarred', user, optLabel_(o));
+  }
   return { itemId: o.item, opt: sent_(o) };
 }
 
@@ -504,15 +522,18 @@ function deleteItem_(ss, body, user) {
     }
   }
   items.deleteRow(row);
+  log_(ss, id, it.name, 'Item deleted', user, 'moved to the Deleted items tab');
   var szs = ss.getSheetByName(TABS.sizes);
   if (szs) sizeRows_(szs).filter(function (r) { return r.item === id; }).reverse().forEach(function (r) { szs.deleteRow(r._row); });
   return { delItem: id };
 }
 
-function deleteOption_(ss, body) {
+function deleteOption_(ss, body, user) {
   var opts = ss.getSheetByName(TABS.opts), row = findRow_(opts, 1, body.oid);
   if (!row) throw fail_('not_found');
+  var o = fromRow_(opts.getRange(row, 1, 1, OPT_KEYS.length).getValues()[0], OPT_KEYS, OPT_TYPES);
   opts.deleteRow(row);
+  log_(ss, o.item, itemName_(ss, o.item), 'Vendor deleted', user, optLabel_(o) + (o.price != null && o.price !== '' ? ' · $' + o.price : ''));
   return { delOpt: String(body.oid) };
 }
 
@@ -537,6 +558,7 @@ function addReminder_(ss, body, user, forItem) {
   var sh = tab_(ss, TABS.reminders, REM_COLS, REM_TYPES);
   var r = { rid: 'R-' + ('000' + (maxNumber_(sh, 1, 'R-') + 1)).slice(-4), text: text, at: now_(ss), by: user, done: false, doneAt: '', doneBy: '' };
   append_(sh, toRow_(r, REM_KEYS, REM_TYPES), REM_TYPES);
+  log_(ss, r.rid, 'Reminder', 'Reminder added', user, text);
   return { reminder: r };
 }
 function checkReminder_(ss, body, user) {
@@ -545,12 +567,15 @@ function checkReminder_(ss, body, user) {
   var r = fromRow_(sh.getRange(row, 1, 1, REM_KEYS.length).getValues()[0], REM_KEYS, REM_TYPES);
   r.done = !!body.done; r.doneAt = r.done ? now_(ss) : ''; r.doneBy = r.done ? user : '';
   write_(sh, row, [[r.done, r.doneAt, r.doneBy]], ['b', 't', 't'], REM_KEYS.indexOf('done') + 1);
+  log_(ss, r.rid, 'Reminder', r.done ? 'Reminder closed' : 'Reminder reopened', user, r.text);
   return { reminder: r };
 }
-function deleteReminder_(ss, body) {
+function deleteReminder_(ss, body, user) {
   var sh = ss.getSheetByName(TABS.reminders), row = sh ? findRow_(sh, 1, body.rid) : 0;
   if (!row) throw fail_('not_found');
+  var r = fromRow_(sh.getRange(row, 1, 1, REM_KEYS.length).getValues()[0], REM_KEYS, REM_TYPES);
   sh.deleteRow(row);
+  log_(ss, r.rid, 'Reminder', 'Reminder deleted', user, r.text);
   return { delReminder: String(body.rid) };
 }
 
@@ -584,6 +609,78 @@ function sizeRows_(sh) {
   }).filter(function (r) { return r.item; });
 }
 
+/** The row of the oldest of the EVENTS_SENT events a load sends; "Show older" asks for the rows above it. */
+function eventsFrom_(ss) {
+  var es = ss.getSheetByName(TABS.events), last = es ? es.getLastRow() : 1;
+  return Math.max(2, last - EVENTS_SENT + 1);
+}
+/** A page of the activity log, newest first, from the rows above row `before`: the next n rows, or, with a search (body.q),
+ *  the next n rows that hold every word of it (in the date, item, event, name or note). `before` in the answer is where
+ *  the next page starts; `more` says whether rows are left above it. */
+function eventsPage_(ss, body) {
+  var es = ss.getSheetByName(TABS.events), last = es ? es.getLastRow() : 1;
+  var row = Math.min(Math.floor(Number(body.before)) || last + 1, last + 1), n = Math.min(Math.max(Math.floor(Number(body.n)) || EVENTS_SENT, 1), 500);
+  var m = searchTerms_(body.q), words = m.words, out = [];
+  var chunk = words.length || m.days.length ? 2000 : n;
+  while (row > 2 && out.length < n) {
+    var hi = row - 1, lo = Math.max(2, hi - chunk + 1), vals = es.getRange(lo, 1, hi - lo + 1, EVENT_COLS.length).getValues();
+    row = lo;
+    for (var i = hi; i >= lo; i--) {
+      var r = vals[i - lo];
+      if (!r[1] && !r[3]) continue;
+      var e = { at: stamp_(r[0], ss), item: String(r[1]), name: String(r[2]), event: String(r[3]), by: String(r[4]), note: String(r[5]) };
+      if ((words.length || m.days.length) && !termsMatch_(m, e)) continue;
+      out.push(e);
+      if (out.length >= n) { row = i; break; }
+    }
+  }
+  return { events: out, before: row, more: row > 2 };
+}
+/** A search, split into dates ("Oct 9", "2026-10-09") that must be the entry's day, and words that must each appear in it.
+ *  A word of one or two digits must be a whole number in it (so "9" does not find "29"); longer words can be part of a word. */
+function searchTerms_(q) {
+  var t = String(q || '').toLowerCase().slice(0, 100), days = [];
+  t = t.replace(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b/g, function (x, mo, d) { days.push(mo + ' ' + Number(d)); return ' '; });
+  t = t.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, function (x) { days.push(shortDay_(x).toLowerCase() + '|' + x); return ' '; });
+  return { days: days, words: t.split(/\s+/).filter(Boolean).slice(0, 8) };
+}
+function termsMatch_(m, e) {
+  var dayOf = shortDay_(e.at).toLowerCase(), ymd = String(e.at).slice(0, 10);
+  if (!m.days.every(function (d) { var p = d.split('|'); return p[1] ? p[1] === ymd : p[0] === dayOf; })) return false;
+  var hay = [e.at, dayOf, e.item, e.name, e.event, e.by, e.note].join(' ').toLowerCase(), toks = hay.split(/[^a-z0-9.%µ]+/);
+  return m.words.every(function (w) { return /^\d{1,2}$/.test(w) ? toks.indexOf(w) >= 0 : hay.indexOf(w) >= 0; });
+}
+
+/* ---------------------------------------------------------- activity log */
+// Every change made from the page is written to the Stock events tab (29 Oct 2026): stock reports and rechecks as before,
+// and now item, vendor, size and reminder changes too. LOG_ holds this request's new rows; they go back to the page as patch.log.
+var LOG_ = [];
+var ITEM_LABELS = ['Name', 'Also called', 'CAS', 'Category', 'Location', 'Min level', 'Unit', 'Type', 'Long lead time', 'Has expiry',
+  'Required spec', 'Notes', 'On the shelf', 'Check every (days)'];   // in the order of ITEM_EDITABLE
+var OPT_LOGGED = ['vendor', 'catalog', 'grade', 'size', 'pack', 'unit', 'price', 'pnote', 'comment', 'link'];
+var OPT_LABELS = ['Vendor', 'Catalog #', 'Grade', 'Size', 'Pack', 'Pack unit', 'Price', 'Price note', 'Comment', 'Link'];
+function log_(ss, itemId, name, event, user, note) {
+  var e = { at: now_(ss), item: String(itemId || ''), name: String(name || ''), event: event, by: user || '', note: text_(note, 300) };
+  append_(tab_(ss, TABS.events, EVENT_COLS, EVENT_TYPES), [e.at, e.item, e.name, e.event, e.by, e.note], EVENT_TYPES);
+  LOG_.push(e);
+  return e;
+}
+/** "Min level: 10 → 5; Notes: (empty) → keep in hood": the fields that changed. */
+function changes_(a, b, keys, labels) {
+  function v(x) { if (x == null || x === '') return '(empty)'; if (x === true) return 'yes'; if (x === false) return 'no'; var t = String(x); return t.length > 40 ? t.slice(0, 38) + '…' : t; }
+  var out = [];
+  keys.forEach(function (k, i) {
+    var x = a[k] == null ? '' : String(a[k]), y = b[k] == null ? '' : String(b[k]);
+    if (x !== y) out.push(labels[i] + ': ' + v(a[k]) + ' → ' + v(b[k]));
+  });
+  return out.join('; ');
+}
+function itemName_(ss, id) {
+  var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, id);
+  return row ? String(items.getRange(row, ITEM_KEYS.indexOf('name') + 1).getValue()) : '';
+}
+function optLabel_(o) { return [o.vendor, o.catalog, o.size ? '(' + o.size + ')' : ''].filter(Boolean).join(' '); }
+
 function events_(ss) {
   var events = [], es = ss.getSheetByName(TABS.events);
   if (es && es.getLastRow() >= 2) {
@@ -606,7 +703,7 @@ function compact_(ss) {
   }
   return { compact: true, ikeys: ITEM_KEYS, okeys: OPT_KEYS, items: table(ss.getSheetByName(TABS.items), ITEM_KEYS, ITEM_TYPES),
            opts: table(ss.getSheetByName(TABS.opts), OPT_KEYS, OPT_TYPES), events: events_(ss), reminders: reminders_(ss),
-           skeys: SIZE_KEYS, sizes: sizes_(ss).map(function (r) { return SIZE_KEYS.map(function (k) { return r[k]; }); }) };
+           skeys: SIZE_KEYS, sizes: sizes_(ss).map(function (r) { return SIZE_KEYS.map(function (k) { return r[k]; }); }), evFrom: eventsFrom_(ss) };
 }
 
 /** A vendor option as the page expects it: every field except the item it belongs to. */
@@ -647,14 +744,14 @@ function toRow_(o, keys, types) {
 
 function cleanItem_(f) {
   var type = text_(f.type, 12);
-  if (ITEM_KINDS.indexOf(type) < 0) type = f.stocked === 'Yes' || f.stocked == null || f.stocked === '' ? 'Stocked' : 'On hand';
+  if (ITEM_KINDS.indexOf(type) < 0) type = 'Stocked';
   return { name: text_(f.name, 160), aka: text_(f.aka, 200), cas: text_(f.cas, 40), cat: text_(f.cat, 60), loc: text_(f.loc, 120),
     min: num_(f.min), unit: text_(f.unit, 16), type: type, lead: !!f.lead, exp: !!f.exp,
     spec: text_(f.spec, 120), notes: text_(f.notes, 1000), level: num_(f.level), check: num_(f.check) };
 }
 /** Keeps the older "Stocked" column and the "Show" column in step with Type. */
 function kind_(it) {
-  it.stocked = it.type === 'Stocked' ? 'Yes' : (it.stocked === 'Personal' ? 'Personal' : 'No');
+  it.stocked = it.stocked === 'Personal' ? 'Personal' : it.type === 'Stocked' ? 'Yes' : 'No';
   it.show = it.type === 'Price only' ? (it.show === 'More' ? 'More' : 'Price list') : 'Main';
 }
 function cleanOpt_(f) {

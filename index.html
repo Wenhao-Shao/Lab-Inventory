@@ -109,6 +109,7 @@ button.group:hover{color:var(--ink)}
 .btn.ghost{background:none;border-color:transparent;color:var(--muted);padding-left:6px;padding-right:6px}
 thead tr.bare{display:none}
 .pill.NoNeed{color:var(--none);background:var(--none-bg)}
+#evRes td .pill{white-space:nowrap} #evRes td.evat{white-space:nowrap}
 .pill.Kind{color:var(--muted);background:none;border:1px solid var(--line);font-weight:500}
 .sep{width:1.5px;align-self:stretch;background:var(--line);margin:0 2px}
 .morebar{border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--sunk);font-size:13px;color:var(--muted)}
@@ -269,13 +270,14 @@ var CAT_ORDER = ["General organic solvents","Spec/HPLC solvents","Anhydrous solv
   "Gloves & PPE","Pipettes & tips","Filtration, syringes & needles","Vials, tubes & plates","Bottles & containers","Glassware","Stoppers, septa & joints","Stir bars",
   "Substrates & microscopy","Chromatography & TLC","Hand tools & weighing","General supply","Cleaning & wipes","Tapes, films & general supplies","Desiccants","Tubing & fluid transfer",
   "Pumps & vacuum","Heating & baths","Clamps, stands & supports","Asset","Benchtop equipment","Consumables"];
-var KINDS = ["Stocked","On hand","Asset","Price only"];
-var KIND_NOTE = { "On hand": "On hand; not restocked as a routine", "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
+var KINDS = ["Stocked","Asset","Price only"];   /* "On hand" was merged into Stocked on 29 Oct 2026 */
+var KIND_NOTE = { "Asset": "Equipment the lab owns", "Price only": "Not in the lab; a price is on file" };
 /* Type and Show come from the Sheet. A Sheet that has not been updated yet has neither, so fall back to the old "Stocked" column. */
-function kindOf(it){ return KINDS.indexOf(it.type) >= 0 ? it.type : (it.stocked === "Yes" || it.stocked === "Not set" || !it.stocked ? "Stocked" : "On hand"); }
+function kindOf(it){ return KINDS.indexOf(it.type) >= 0 ? it.type : "Stocked"; }   /* includes a row still marked On hand */
+function hasMin(it){ return typeof it.min === "number"; }
 function showOf(it){ return it.show === "Price list" || it.show === "More" ? it.show : "Main"; }
 function inScope(it){ var w = showOf(it); return w === "Main" || (w === "Price list" && S.scope !== "main") || (w === "More" && S.scope === "more"); }
-function noReport(it){ return statusOf(it) === "None" && kindOf(it) === "Stocked"; }
+function noReport(it){ return statusOf(it) === "None" && kindOf(it) === "Stocked" && hasMin(it); }   /* has a minimum level but has never been counted */
 var STATUS_OF = { Low:"Low", Out:"Out", Ordered:"Ordered", Stock:"OK", "No need":"No need", Received:"OK", OK:"OK" };   /* Received and OK are reports made before 8 Oct 2026 */
 function pillOf(s){ return s === "No need" ? "NoNeed" : s; }
 function evLabel(ev){ return ev === "Stock" ? "Stock count" : ev === "OK" ? "Checked" : ev; }
@@ -357,10 +359,12 @@ function groupsOf(it){
 }
 function shownGroups(it){ return groupsOf(it).filter(function(g){ return g.shown; }); }
 function stStatus(st){ var s = st && st.status; return s ? (STATUS_OF[s] || s) : "None"; }
-/* The pill for a status. Without a minimum level there is nothing to call OK against, so a size with stock shows the item's type (Stocked, On hand, Asset). */
+/* The pill for a status (29 Oct 2026). Low, Out, Ordered and No need show as reported. A count is OK or Low against the minimum level;
+   without a minimum there is nothing to call OK against, so it shows the item's type (Stocked, Asset). Never reported: No report when
+   there is a minimum level to count against, else the type. */
 function pillFor(it, s){
   var k = kindOf(it);
-  if ((s === "OK" && typeof it.min !== "number") || (s === "None" && k !== "Stocked")) return {cls: "Kind", text: k};
+  if ((s === "OK" && !hasMin(it)) || (s === "None" && (k !== "Stocked" || !hasMin(it)))) return {cls: "Kind", text: k};
   return {cls: pillOf(s), text: statusLabel(s)};
 }
 function statusOf(it){
@@ -466,6 +470,7 @@ function applyPatch(p, ctx){
   var it;
   if (p.item && (it = itemById(p.item.id))){ Object.assign(it, p.item); delete it._hay; }
   if (p.event){ if (ctx && ctx.localEvent) Object.assign(ctx.localEvent, p.event); else S.events.unshift(p.event); }
+  if (p.log) p.log.forEach(function(e){ S.events.unshift(e); });   /* edits, vendor rows, sizes, reminders (29 Oct 2026) */
   if (p.add) S.items.push(p.add);
   if (p.delItem) S.items = S.items.filter(function(i){ return i.id !== p.delItem; });
   if (p.opt && (it = itemById(p.itemId))){
@@ -499,24 +504,28 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, suspectLow: S.lowTicket, readReminder: S.readRem, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, suspectLow: S.lowTicket, readReminder: S.readRem, evFrom: S.evFrom, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
 function dropCache(){ clearTimeout(cacheT); try { localStorage.removeItem(DKEY); } catch(e){} }
 
-function api(action, payload, ctx){
-  var body = Object.assign({action: action, pass: S.pass, user: S.name, v: 2}, payload || {});
+function reqBody(action, payload){ return Object.assign({action: action, pass: S.pass, user: S.name, v: 2}, payload || {}); }
+/* One request to the Sheet script; the answer, or a thrown {error}. */
+function post(body){
   var call = DEMO ? Promise.resolve().then(function(){ return demoApi(body); })
     : fetch(API_URL, {method: "POST", redirect: "follow", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(body)})
         .then(function(r){ return r.json(); }, function(){ throw {error: "network"}; })
         .catch(function(e){ throw (e && e.error) ? e : {error: "network"}; });
-  return call.then(function(d){
-      if (!d || !d.ok) throw (d || {error: "network"});
+  return call.then(function(d){ if (!d || !d.ok) throw (d || {error: "network"}); return d; });
+}
+function api(action, payload, ctx){
+  return post(reqBody(action, payload)).then(function(d){
       setRole(d.role, d);
       if (d.patch) applyPatch(d.patch, ctx);
       else {
         S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now();
+        S.evFrom = d.evFrom; S.older = []; S.olderFrom = null; S.olderMore = false;   /* older activity is loaded again from the new newest 150 */
         S.sizeRows = d.skeys ? (d.sizes || []).map(function(r){ var o = {}; d.skeys.forEach(function(k, i){ o[k] = r[i]; }); return o; }) : (d.sizes || []);
         indexSizes();
       }
@@ -964,7 +973,7 @@ function optFrom(v, p){
 function addItem(){
   openSheet("Add an item", itemFields(true), {type: "Stocked", unit: "", o_unit: "", name: S.q.trim()}, function(v){
     var opt = v.o_vendor || v.o_catalog ? optFrom(v, "o_") : null;
-    v.stocked = v.type === "Stocked" ? "Yes" : "No";
+    v.stocked = v.type === "Stocked" ? "Yes" : "No";   /* the Sheet's older column, kept in step */
     return save("addItem", {item: v, opt: opt}, "Added " + v.name).then(function(d){
       S.q = ""; $("q").value = ""; S.status = "all"; S.cat = "all"; S.kind = "all"; if (v.type === "Price only" && S.scope === "main") S.scope = "prices"; S.open = d.newId; S.tab = "items"; render();
     });
@@ -984,7 +993,7 @@ function editItem(it){
     });
   });
   openSheet("Edit " + it.name, itemFields(false, sized(it)), Object.assign({}, it, {type: kindOf(it)}), function(v){
-    v.stocked = v.type === "Stocked" ? "Yes" : (it.stocked === "Personal" ? "Personal" : "No");
+    v.stocked = it.stocked === "Personal" ? "Personal" : v.type === "Stocked" ? "Yes" : "No";
     if (v.type === "Price only" && S.scope === "main") S.scope = "more";
     /* The change shows at once and the form closes; the Sheet is updated in the background. An edit never changes the report or its date. */
     var before = {};
@@ -1030,7 +1039,7 @@ function editOpt(it, o, presetSize){
 function by(name){ return name ? " by " + name : ""; }
 function statusLine(it, g){
   var st = g ? g.stock : it, s = stStatus(st);
-  if (s === "None") return kindOf(it) === "Stocked" ? "Nobody has reported on this yet." : KIND_NOTE[kindOf(it)] + ".";
+  if (s === "None") return kindOf(it) !== "Stocked" ? KIND_NOTE[kindOf(it)] + "." : hasMin(it) ? "Nobody has counted this yet." : "Stocked; no minimum level, so a count is not graded OK or Low.";
   var when = day(st.statusAt);
   return (s === "No need" ? "No need to restock for now" : statusLabel(s)) + (when ? ", reported " + when : ", check date not recorded") + by(st.statusBy) + (st.statusNote ? " · " + st.statusNote : "");
 }
@@ -1285,20 +1294,67 @@ function renderReorder(){
     b.appendChild(table(wait, "It arrived: report stock", askStock).el); v.appendChild(b);
   }
 }
+/* ---------- activity: every change made in the app, newest first. The newest 150 come with the page; "Show older" loads
+   150 more at a time; Search looks through all of it in the Sheet (29 Oct 2026). ---------- */
+S.older = []; S.olderFrom = null; S.olderMore = false; S.evQ = ""; S.evHits = []; S.evHitsFrom = null; S.evHitsMore = false; S.evBusy = false; S.evTok = 0;
+function evMatch(e, words){ var hay = [e.at, day(e.at), e.item, e.name, e.event, e.by, e.note].join(" ").toLowerCase(); return words.every(function(w){ return hay.indexOf(w) >= 0; }); }
+function moreEvents(){
+  if (S.evBusy) return;
+  var tok = ++S.evTok; S.evBusy = true; render();
+  post(reqBody("events", {before: S.olderFrom != null ? S.olderFrom : S.evFrom, n: 150})).then(function(d){
+    if (tok !== S.evTok) return;
+    S.older = S.older.concat(d.events || []); S.olderFrom = d.before; S.olderMore = !!d.more;
+  }, function(e){ if (tok === S.evTok) toast("Could not load older activity. " + problem(e), 9000); }).then(function(){ if (tok === S.evTok){ S.evBusy = false; render(); } });
+}
+function searchEvents(q, more){
+  q = String(q || "").trim();
+  if (!q){ clearSearch(); return; }
+  var tok = ++S.evTok;
+  if (!more){ S.evQ = q; S.evHits = []; S.evHitsFrom = null; S.evHitsMore = false; }
+  if (DEMO){ var w = q.toLowerCase().split(/\s+/); S.evHits = S.events.filter(function(e){ return evMatch(e, w); }); S.evBusy = false; render(); return; }
+  S.evBusy = true; render();
+  post(reqBody("events", more ? {q: q, n: 150, before: S.evHitsFrom} : {q: q, n: 150})).then(function(d){
+    if (tok !== S.evTok) return;
+    S.evHits = S.evHits.concat(d.events || []); S.evHitsFrom = d.before; S.evHitsMore = !!d.more;
+  }, function(e){ if (tok === S.evTok) toast("Search did not work. " + problem(e), 9000); }).then(function(){ if (tok === S.evTok){ S.evBusy = false; render(); } });
+}
+function clearSearch(){ S.evTok++; S.evQ = ""; S.evHits = []; S.evBusy = false; var i = $("evq"); if (i) i.value = ""; render(); }
+function evTable(list){
+  var tb = h("tbody");
+  list.forEach(function(e){
+    var nm = h("span"); nm.appendChild(chem(e.name || e.item));
+    var hm = /\d{2}:\d{2}/.exec(String(e.at || "").slice(10));
+    tb.appendChild(h("tr", null, h("td", {class: "num evat", title: e.at, text: day(e.at) + (hm ? ", " + hm[0] : "")}),
+      h("td", null, h("span", {class: "pill " + (e.event === "Stock" || !STATUS_OF[e.event] ? "None" : pillOf(STATUS_OF[e.event])), text: evLabel(e.event)})),
+      h("td", null, nm, by(e.by)), h("td", {text: e.note || ""})));
+  });
+  return h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Date"}), h("th", {text: "What"}), h("th", {text: "Item"}), h("th", {text: "Note"}))), tb));
+}
 function renderActivity(){
-  var v = $("v-activity"); v.textContent = "";
-  var p = h("div", {class: "panel"}, h("h2", {text: "Recent reports"}));
-  if (!S.events.length) p.appendChild(h("p", {class: "note", text: "No reports yet. Open an item and tap Low, Out, Ordered, Report stock or No need; each report is logged here with the date and who made it."}));
-  else {
-    var tb = h("tbody");
-    S.events.forEach(function(e){
-      var nm = h("span"); nm.appendChild(chem(e.name || e.item));
-      tb.appendChild(h("tr", null, h("td", {class: "num", text: day(e.at)}), h("td", null, h("span", {class: "pill " + (e.event === "Stock" ? "None" : pillOf(STATUS_OF[e.event] || "None")), text: evLabel(e.event)})),
-        h("td", null, nm, by(e.by)), h("td", {text: e.note || ""})));
-    });
-    p.appendChild(h("div", {class: "scroll"}, h("table", null, h("thead", null, h("tr", null, h("th", {text: "Date"}), h("th", {text: "Report"}), h("th", {text: "Item"}), h("th", {text: "Note"}))), tb)));
+  var v = $("v-activity");
+  if (!$("evRes")){   /* built once, so the search box keeps what is typed in it while the list below changes */
+    v.textContent = "";
+    var inp = h("input", {id: "evq", type: "search", maxlength: "100", autocomplete: "off", placeholder: "Search all activity: item, person, word or date (Oct 29)", "aria-label": "Search all activity"});
+    v.appendChild(h("div", {class: "panel"}, h("h2", {text: "Activity"}),
+      h("form", {class: "addrem", role: "search", novalidate: true, onsubmit: function(ev){ ev.preventDefault(); searchEvents(inp.value); }}, inp, h("button", {class: "btn primary", type: "submit", text: "Search"})),
+      h("div", {id: "evRes"})));
   }
-  v.appendChild(p);
+  var res = $("evRes"); res.textContent = "";
+  if (S.evQ){
+    res.appendChild(h("div", {class: "acts"}, h("span", {class: "note", text: S.evBusy && !S.evHits.length ? "Searching all activity for “" + S.evQ + "”…" :
+        S.evHits.length + (S.evHitsMore ? "+" : "") + (S.evHits.length === 1 ? " match" : " matches") + " for “" + S.evQ + "”, newest first"}),
+      h("button", {class: "btn small", type: "button", text: "Clear search", onclick: clearSearch})));
+    if (S.evHits.length) res.appendChild(evTable(S.evHits));
+    if (S.evHitsMore) res.appendChild(h("button", {class: "btn small", type: "button", disabled: S.evBusy, text: S.evBusy ? "Loading…" : "Show older matches", onclick: function(){ searchEvents(S.evQ, true); }}));
+    return;
+  }
+  var list = S.events.concat(S.older);
+  if (!list.length){ res.appendChild(h("p", {class: "note", text: "Nothing yet. Every change made in the app (stock reports, edits, vendor rows, sizes and reminders) is listed here with the date and who made it."})); return; }
+  res.appendChild(h("p", {class: "note", text: "Every change made in the app, newest first."}));
+  res.appendChild(evTable(list));
+  var more = S.olderFrom != null ? S.olderMore : typeof S.evFrom === "number" && S.evFrom > 2;
+  if (more) res.appendChild(h("button", {class: "btn small", type: "button", disabled: S.evBusy, text: S.evBusy ? "Loading…" : "Show older", onclick: moreEvents}));
+  else if (S.olderFrom != null) res.appendChild(h("p", {class: "note", text: "That is the start of the log."}));
 }
 function render(){
   S.items.forEach(function(it){ delete it._g; });
@@ -1357,7 +1413,7 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
     S.name = saved.name; S.pass = saved.pass;
     var kept = readCache();
     if (kept){
-      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept); S.loaded = true;
+      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept); S.evFrom = kept.evFrom; S.loaded = true;
       render(); sync("Saved copy; updating…"); load(true);
     } else { render(); load(); }
   }
