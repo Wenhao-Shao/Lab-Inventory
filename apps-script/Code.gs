@@ -196,14 +196,17 @@ function handle_(body) {
   var action = String(body.action || 'load'), extra = {}, lean = Number(body.v) >= 2, patch = null;
   // Ticking off and removing reminders: the admin passcode, or the edit passcode while no admin passcode is set.
   extra.canTick = role === 'admin' || (role === 'edit' && !admin);
+  // The read-only passcode can do one thing: mark a size Low with about how much is left. That also adds a
+  // "Please check" reminder. Low from the edit or admin passcode adds no reminder. (29 Oct 2026)
+  extra.lowTicket = role === 'read';
   if (action !== 'load') {
-    if (role !== 'edit' && role !== 'admin') throw fail_('read_only');
+    if (role === 'read' ? !(action === 'report' && String(body.event || '') === 'Low') : role !== 'edit' && role !== 'admin') throw fail_('read_only');
     var user = text_(body.user, 40);
     if (!user) throw fail_('invalid', 'A name is required to make changes.');
     var lock = LockService.getScriptLock();
     try { lock.waitLock(20000); } catch (err) { throw fail_('busy'); }
     try {
-      if (action === 'report') patch = report_(ss, body, user);
+      if (action === 'report') patch = report_(ss, body, user, role === 'read');
       else if (action === 'addItem') { patch = addItem_(ss, body, role); extra.newId = patch.add.id; }
       else if (action === 'updateItem') patch = updateItem_(ss, body, role);
       else if (action === 'saveOption') patch = saveOption_(ss, body);
@@ -223,14 +226,16 @@ function handle_(body) {
     } finally { lock.releaseLock(); }
     if (lean) return Object.assign({ ok: true, role: role, patch: patch }, extra);
   }
-  if (lean) return Object.assign({ ok: true, role: role, canTick: extra.canTick }, compact_(ss));
+  if (lean) return Object.assign({ ok: true, role: role }, extra, compact_(ss));
   var data = readAll_(ss);
   return Object.assign({ ok: true, role: role, items: data.items, events: data.events, reminders: reminders_(ss), sizes: sizes_(ss) }, extra);   // extra carries canTick
 }
 
 /* --------------------------------------------------------------- actions */
 
-function report_(ss, body, user) {
+/** ticket: the report comes from the read-only passcode. It must be Low with a count; it never sets the item's unit; it adds a
+ *  "Please check" reminder; and a size marked Ordered stays Ordered (the count goes in the reminder and the stock event). */
+function report_(ss, body, user, ticket) {
   var ev = String(body.event || '');
   if (!STATUS_OF[ev]) throw fail_('invalid', 'Unknown report type.');
   var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.itemId);
@@ -239,6 +244,7 @@ function report_(ss, body, user) {
   var cur = fromRow_(items.getRange(row, 1, 1, ITEM_KEYS.length).getValues()[0], ITEM_KEYS, ITEM_TYPES);
   var when = now_(ss), status = STATUS_OF[ev], level = cur.level, unit = cur.unit || text_(body.unit, 16);
   var given = num_(body.level), note = text_(body.note, 300);
+  if (ticket && (ev !== 'Low' || given == null)) throw fail_('invalid', 'Enter about how much is left.');
   function amount(n, u) { return String(n) + (u ? ' ' + u : ''); }
   if (ev === 'Out') { level = 0; }
   else if (ev === 'Low') { if (given != null) { level = given; note = amount(given, unit) + ' left'; } }
@@ -252,13 +258,51 @@ function report_(ss, body, user) {
   }
   var size = text_(body.size, 80);   // the size's name, written at the start of the note
   if (size) note = size + (note ? ' · ' + note : '');
+  if (ticket) {
+    var left = amount(given, unit), held = heldOrdered_(ss, body, cur);
+    if (held) {   // already on order: leave it Ordered, so the order is not lost; the count goes in the reminder
+      var hev = { at: when, item: String(body.itemId), name: cur.name, event: ev, by: user, note: (note + ' · still Ordered').slice(0, 300) };
+      append_(ss.getSheetByName(TABS.events), [hev.at, hev.item, hev.name, hev.event, hev.by, hev.note], EVENT_TYPES);
+      return { event: hev, reminder: lowTicket_(ss, user, cur, size, left, held) };
+    }
+    unit = cur.unit || '';   // the unit typed in goes in the note only
+    var tp = body.sized && body.sizeKey != null ? sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note) : plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note);
+    tp.reminder = lowTicket_(ss, user, cur, size, left, null);
+    return tp;
+  }
   if (body.sized && body.sizeKey != null) return sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, unit, note);
+  return plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note);
+}
+
+/** A report on an item without sizes: the item's own status columns change. */
+function plainReport_(ss, body, user, items, row, cur, ev, when, status, level, unit, note) {
   append_(ss.getSheetByName(TABS.events), [when, String(body.itemId), cur.name, ev, user, note], EVENT_TYPES);
   write_(items, row, [[status, when, user, note]], ['t', 't', 't', 't'], ITEM_KEYS.indexOf('status') + 1);
   if (level !== cur.level) write_(items, row, [[level == null ? '' : level]], ['n'], ITEM_KEYS.indexOf('level') + 1);
   if (unit !== cur.unit) write_(items, row, [[unit]], ['t'], ITEM_KEYS.indexOf('unit') + 1);
   return { item: { id: String(body.itemId), status: status, statusAt: when, statusBy: user, statusNote: note, level: level, unit: unit },
            event: { at: when, item: String(body.itemId), name: cur.name, event: ev, by: user, note: note } };
+}
+
+/** The size (or the item, without sizes) is marked Ordered: { at: date } of that report; otherwise null. */
+function heldOrdered_(ss, body, cur) {
+  if (!(body.sized && body.sizeKey != null)) return cur.status === 'Ordered' ? { at: cur.statusAt || '' } : null;
+  var sh = ss.getSheetByName(TABS.sizes); if (!sh) return null;
+  var id = String(body.itemId), key = text_(body.sizeKey, 80);
+  var r = sizeRows_(sh).filter(function (x) { return x.item === id && x.size === key; })[0];
+  return r && r.status === 'Ordered' ? { at: r.statusAt || '' } : null;
+}
+/** "2026-10-29 14:05" -> "Oct 29", as the page shows dates. */
+function shortDay_(at) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(at || ''));
+  return m ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(m[2]) - 1] + ' ' + Number(m[3]) : String(at || '');
+}
+/** The reminder a Low from the read-only passcode adds, e.g.
+ *  "Please check: Sam marked Acetone (4 L) low, about 1 L left." */
+function lowTicket_(ss, user, cur, size, left, held) {
+  var text = 'Please check: ' + user + ' marked ' + cur.name + (size ? ' (' + size + ')' : '') + ' low, about ' + left + ' left' +
+    (held ? '. It is already marked Ordered' + (held.at ? ' (' + shortDay_(held.at) + ')' : '') + ', so it was left as Ordered' : '') + '.';
+  return addReminder_(ss, { text: text }, user).reminder;
 }
 
 /** A report on one size of an item that has sizes: the size's own stock row changes, and the item's status columns get the

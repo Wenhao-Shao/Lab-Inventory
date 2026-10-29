@@ -78,7 +78,9 @@ button{cursor:pointer}
 .rem:last-child{border-bottom:0}
 .rem input[type=checkbox]{width:19px;height:19px;margin:2px 0 0;flex:none;accent-color:var(--accent)}
 .rem .t{flex:1;min-width:0;overflow-wrap:anywhere}
-.rem.done .t{text-decoration:line-through;color:var(--muted)}
+.rem.done .t{color:var(--muted)} .rem.done .t .tx{text-decoration:line-through}
+.rem .x{flex:none;min-width:30px;padding:3px 8px;font-size:17px;line-height:1;color:var(--muted)}
+.rem .x.sure{font-size:13px;padding:6px 10px;color:var(--out);background:var(--out-bg);border-color:var(--out)}
 .addrem{display:flex;gap:8px;flex-wrap:wrap}
 .addrem input{flex:1 1 220px;min-width:0;padding:9px 10px;border:1.5px solid var(--line);border-radius:7px;background:var(--bg);font-size:16px}
 .star{background:none;border:0;padding:0 5px 0 0;font-size:16px;line-height:1;color:var(--accent);cursor:pointer}
@@ -94,7 +96,8 @@ button.group:hover{color:var(--ink)}
 .st.isdue .pill{font-family:var(--display);font-size:11.5px;padding:2px 2px}
 .st .pill.Due{flex:0 0 auto;color:var(--low);background:transparent;border:1px solid var(--low);padding:1px 4px}
 .sizerow td{background:var(--sunk);padding:7px 10px}
-.sizehead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+/* the size line stays in view when the vendor table scrolls sideways on a phone, so its buttons can be reached */
+.sizehead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;position:sticky;left:10px;max-width:calc(100cqw - 20px);box-sizing:border-box}
 .sizehead .sz{font-weight:600;min-width:2.5em}
 .sizehead .acts{margin-left:auto;gap:6px}
 .btn.toggle{margin-top:8px}
@@ -118,7 +121,7 @@ a{color:var(--accent)}
 .facts dd{margin:0;overflow-wrap:anywhere}
 .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .acts .lab{font-size:12.5px;color:var(--muted);margin-right:2px}
-.scroll{overflow-x:auto}
+.scroll{overflow-x:auto;container-type:inline-size}
 table{border-collapse:collapse;width:100%;font-size:13.5px}
 th{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:left;font-weight:600}
 th,td{padding:6px 10px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
@@ -439,10 +442,12 @@ function expand(d){
   return items;
 }
 /* Passcodes: read and edit (an "admin" passcode, if one was set in the Sheet, works the same as edit). Due to check and check intervals come with edit. */
-function setRole(r, canTick){
+function setRole(r, canTick, lowTicket){
   S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = S.canWrite; if (!S.isAdmin && S.status === "due") S.status = "all";
   /* Ticking off and removing reminders: the admin passcode (or edit, while the Sheet has no admin passcode). An older Sheet script does not say: then edit can. */
   S.canTick = canTick === undefined ? S.canWrite : !!canTick;
+  /* The read-only passcode can mark a size Low (with about how much is left); the Sheet then adds a "Please check" reminder. */
+  S.lowTicket = r === "read" && !!lowTicket;
 }
 function itemById(id){ for (var i = 0; i < S.items.length; i++) if (S.items[i].id === id) return S.items[i]; return null; }
 function applyPatch(p, ctx){
@@ -482,7 +487,7 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, lowTicket: S.lowTicket, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
@@ -496,7 +501,7 @@ function api(action, payload, ctx){
         .catch(function(e){ throw (e && e.error) ? e : {error: "network"}; });
   return call.then(function(d){
       if (!d || !d.ok) throw (d || {error: "network"});
-      setRole(d.role, d.canTick);
+      setRole(d.role, d.canTick, d.lowTicket);
       if (d.patch) applyPatch(d.patch, ctx);
       else {
         S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now();
@@ -611,13 +616,18 @@ function report(it, ev, d){
     var ls = localSize(it, key); target = ls.row; if (ls.made) made.push(ls.row);
   }
   var label = useSize && g ? g.label : "";
+  var held = S.lowTicket && ev === "Low" && stStatus(target) === "Ordered";   /* already on order: the Sheet leaves it Ordered */
   var before = {status: target.status, statusAt: target.statusAt, statusBy: target.statusBy, statusNote: target.statusNote, level: target.level, unit: it.unit, flagBy: target.flagBy, flagAt: target.flagAt}, now = stamp();
   var oc = outcome(it, ev, Object.assign({}, d, {size: label}), target);
-  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note};
-  Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); it.unit = oc.unit; S.events.unshift(le);
-  if (useSize){ target.flagBy = ""; target.flagAt = ""; }
+  var le = {at: now, item: it.id, name: it.name, event: ev, by: S.name, note: oc.note + (held ? " · still Ordered" : "")};
+  if (!held){
+    Object.assign(target, {status: oc.status, statusAt: now, statusBy: S.name, statusNote: useSize ? oc.bare : oc.note, level: oc.level}); if (!S.lowTicket) it.unit = oc.unit;
+    if (useSize){ target.flagBy = ""; target.flagAt = ""; }
+  }
+  S.events.unshift(le);
   render(); sync("Saving…");
   var who = it.name + (label ? " (" + label + ")" : "");
+  if (S.lowTicket) toast(who + (held ? " is already on order, so it stays Ordered." : " marked low.") + " A reminder was added for someone to check it.", 6000); else
   toast(ev === "Stock" ? who + ": " + oc.bare + " on the shelf" + (oc.status === "Low" ? ", below the minimum" : oc.status === "Out" ? ", so it is out" : "") : who + " marked " + ev.toLowerCase());
   return enqueue(function(){ return api("report", {itemId: it.id, event: ev, level: d.level, unit: d.unit, qty: d.qty, qunit: d.qunit, size: label, sized: useSize, sizeKey: key, note: ""}, {localEvent: le}); }).catch(function(e){
     Object.assign(target, {status: before.status, statusAt: before.statusAt, statusBy: before.statusBy, statusNote: before.statusNote, level: before.level}); it.unit = before.unit;
@@ -685,10 +695,14 @@ function renderReminders(){
   function line(r){
     var box = h("input", {type: "checkbox", "aria-label": (r.done ? "Mark not done: " : "Mark done: ") + r.text, disabled: !S.canTick || !r.rid, title: S.canTick ? null : "Ticking off is for the admin passcode"});
     box.checked = !!r.done; box.addEventListener("change", function(){ tickReminder(r, box.checked); });
-    var meta = r.done ? "Done " + day(r.doneAt) + by(r.doneBy) : "Added " + day(r.at) + by(r.by) + (r.rid ? "" : " · saving…");
-    var del = S.canTick && r.rid ? h("button", {class: "btn small", type: "button", text: "Remove"}) : null;
-    if (del) del.addEventListener("click", function(){ if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Confirm remove"; return; } removeReminder(r); });
-    return h("div", {class: "rem" + (r.done ? " done" : "")}, box, h("div", {class: "t"}, r.text, h("div", {class: "note", text: meta})), del);
+    var meta = "Added " + day(r.at) + by(r.by) + (r.rid ? "" : " · saving…") + (r.done ? " · Closed " + (r.doneAt ? day(r.doneAt) : "") + (r.doneBy ? " by " + r.doneBy : "") : "");
+    /* The cross deletes the reminder on a second click; the first turns it into "Delete?" for a few seconds. */
+    var del = S.canTick && r.rid ? h("button", {class: "btn small x", type: "button", text: "×", title: "Delete this reminder (click twice)", "aria-label": "Delete reminder: " + r.text}) : null, undo;
+    if (del) del.addEventListener("click", function(){
+      if (del.dataset.sure !== "1"){ del.dataset.sure = "1"; del.textContent = "Delete?"; del.classList.add("sure");
+        undo = setTimeout(function(){ del.dataset.sure = ""; del.textContent = "×"; del.classList.remove("sure"); }, 4000); return; }
+      clearTimeout(undo); removeReminder(r); });
+    return h("div", {class: "rem" + (r.done ? " done" : "")}, box, h("div", {class: "t"}, h("span", {class: "tx", text: r.text}), h("div", {class: "note", text: meta})), del);
   }
   var list = h("div");
   if (S.canWrite && !S.canTick) list.appendChild(h("p", {class: "note", text: "You can add reminders. Ticking them off is done with the admin passcode."}));
@@ -709,8 +723,15 @@ function onlyGroup(it, g){ return g || shownGroups(it)[0] || groupsOf(it)[0]; }
 function whoOf(it, g){ return it.name + (sized(it) && g && g.label ? " — " + g.label : ""); }
 function askLow(it, g){
   g = onlyGroup(it, g);
-  openSheet(whoOf(it, g) + " is low", [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")],
-    {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit, g: g}); });
+  var fields = [{k: "level", label: "How much is left (leave empty if you did not count)", type: "number"}, unitField(it, "unit")];
+  if (S.lowTicket){   /* read-only passcode: a count is needed, and the report also becomes a "Please check" reminder */
+    var st = sized(it) && g ? g.stock : it;
+    fields = [{note: stStatus(st) === "Ordered"
+        ? "This is already marked Ordered" + (st.statusAt ? " (" + day(st.statusAt) + ")" : "") + ", so it stays Ordered. Your count goes into a reminder for someone to check."
+        : "This marks it low and adds a reminder for someone with edit access to check it."},
+      {k: "level", label: "About how much is left", type: "number", req: true}, unitField(it, "unit")];
+  }
+  openSheet(whoOf(it, g) + " is low", fields, {unit: it.unit || ""}, function(v){ report(it, "Low", {level: v.level, unit: v.unit, g: g}); });
 }
 /* What the last Ordered report on a size said was ordered ("Ordered 2 box"), while that size is still marked Ordered. */
 function onOrder(st){
@@ -1040,6 +1061,8 @@ function detail(it){
         if (g.shown && !g.stock.flagAt) ba.appendChild(h("button", {class: "btn small ghost", type: "button", title: "Ask for this size to be counted again: it goes on Due to check until someone reports on it", text: "Recheck", onclick: function(){ recheck(it, g); }}));
         ba.appendChild(h("button", {class: "btn small ghost", type: "button", title: "Rename this size", "aria-label": "Rename the size " + g.label, text: "✎", onclick: function(){ renameSize(it, g); }}));
         head.appendChild(ba);
+      } else if (S.lowTicket && g.shown){
+        head.appendChild(h("span", {class: "acts"}, h("button", {class: "btn small", type: "button", text: "Low", title: "Mark this size low; a reminder is added for someone to check it", onclick: function(){ askLow(it, g); }})));
       }
       tb.appendChild(h("tr", {class: "sizerow" + (g.shown ? "" : " dim")}, h("td", {colspan: "9"}, head)));
       any = true;
@@ -1249,7 +1272,7 @@ function render(){
   $("addBtn").hidden = !(S.canWrite && S.loaded);
   $("exportBtn").hidden = !S.items.length;
   $("refreshBtn").hidden = !S.role || DEMO; $("outBtn").hidden = !S.role || DEMO;
-  $("who").textContent = S.role ? S.name + (S.role === "admin" ? " · admin" : S.canWrite ? " · can edit" : " · read only") : "";
+  $("who").textContent = S.role ? S.name + (S.role === "admin" ? " · admin" : S.canWrite ? " · can edit" : S.lowTicket ? " · read only; can mark Low" : " · read only") : "";
   renderDue(); renderFilters(); renderItems(); renderReorder(); renderActivity(); renderReminders();
 }
 
@@ -1298,7 +1321,7 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
     S.name = saved.name; S.pass = saved.pass;
     var kept = readCache();
     if (kept){
-      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept.canTick); S.loaded = true;
+      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept.canTick, kept.lowTicket); S.loaded = true;
       render(); sync("Saved copy; updating…"); load(true);
     } else { render(); load(); }
   }
