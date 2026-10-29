@@ -196,11 +196,12 @@ function handle_(body) {
   var action = String(body.action || 'load'), extra = {}, lean = Number(body.v) >= 2, patch = null;
   // Ticking off and removing reminders: the admin passcode, or the edit passcode while no admin passcode is set.
   extra.canTick = role === 'admin' || (role === 'edit' && !admin);
-  // The read-only passcode can do one thing: mark a size Low with about how much is left. That also adds a
-  // "Please check" reminder. Low from the edit or admin passcode adds no reminder. (29 Oct 2026)
-  extra.lowTicket = role === 'read';
+  // The read-only passcode can do two things (29 Oct 2026): mark a size Low with about how much is left, which also adds a
+  // "Please check" reminder (Low from the edit or admin passcode adds none); and add a reminder about one item.
+  extra.lowTicket = role === 'read'; extra.readReminder = role === 'read';
   if (action !== 'load') {
-    if (role === 'read' ? !(action === 'report' && String(body.event || '') === 'Low') : role !== 'edit' && role !== 'admin') throw fail_('read_only');
+    var readOk = (action === 'report' && String(body.event || '') === 'Low') || (action === 'addReminder' && !!body.itemId);
+    if (role === 'read' ? !readOk : role !== 'edit' && role !== 'admin') throw fail_('read_only');
     var user = text_(body.user, 40);
     if (!user) throw fail_('invalid', 'A name is required to make changes.');
     var lock = LockService.getScriptLock();
@@ -212,7 +213,7 @@ function handle_(body) {
       else if (action === 'saveOption') patch = saveOption_(ss, body);
       else if (action === 'deleteOption') patch = deleteOption_(ss, body);
       else if (action === 'deleteItem') patch = deleteItem_(ss, body, user);
-      else if (action === 'addReminder') patch = addReminder_(ss, body, user);
+      else if (action === 'addReminder') patch = addReminder_(ss, body, user, role === 'read');
       else if (action === 'checkReminder' || action === 'deleteReminder') {
         if (!extra.canTick) throw fail_('admin_only', 'Only the admin passcode ticks off or removes reminders.');
         patch = action === 'checkReminder' ? checkReminder_(ss, body, user) : deleteReminder_(ss, body);
@@ -525,8 +526,17 @@ function reminders_(ss) {
   var sh = ss.getSheetByName(TABS.reminders);
   return sh ? rows_(sh, REM_KEYS, REM_TYPES).filter(function (r) { return r.rid; }) : [];
 }
-function addReminder_(ss, body, user) {
+/** forItem: from the read-only passcode, which can only add a reminder about one item. The item's name is put at the start
+ *  ("Acetone: ...") when the text does not already start with it. */
+function addReminder_(ss, body, user, forItem) {
   var text = text_(body.text, 300);
+  if (forItem) {
+    var items = ss.getSheetByName(TABS.items), row = findRow_(items, 1, body.itemId);
+    if (!row) throw fail_('not_found');
+    var name = String(items.getRange(row, ITEM_KEYS.indexOf('name') + 1).getValue() || '').trim();
+    if (name && text.toLowerCase().indexOf(name.toLowerCase()) !== 0) text = text ? text_(name + ': ' + text, 300) : '';
+    if (text.replace(/[\s:]+$/, '') === name) text = '';   // only the name: nothing written
+  }
   if (!text) throw fail_('invalid', 'Write the reminder first.');
   var sh = tab_(ss, TABS.reminders, REM_COLS, REM_TYPES);
   var r = { rid: 'R-' + ('000' + (maxNumber_(sh, 1, 'R-') + 1)).slice(-4), text: text, at: now_(ss), by: user, done: false, doneAt: '', doneBy: '' };

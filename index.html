@@ -66,6 +66,11 @@ button{cursor:pointer}
 .row{display:grid;grid-template-columns:86px minmax(0,1.3fr) minmax(0,1fr);gap:4px 12px;align-items:center;width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--line);padding:10px 14px}
 .row:hover{background:var(--sunk)}
 .row[aria-expanded="true"]{background:var(--accent-soft)}
+/* read-only passcode: a bell on each row adds a reminder about that item without opening it */
+.rowwrap{position:relative}
+.row.hasrem{padding-right:126px}
+.rembtn{position:absolute;right:14px;top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.rembtn:hover{color:var(--accent)}
 .name{font-weight:600;overflow-wrap:anywhere}
 .aka{color:var(--muted);font-weight:400;font-size:13px}
 .meta{color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
@@ -112,6 +117,8 @@ a{color:var(--accent)}
 @media (max-width:620px){
   .row{grid-template-columns:auto minmax(0,1fr)}
   .buy{grid-column:1 / -1;text-align:left}
+  .row.hasrem{padding-right:56px}
+  .rembtn{top:10px;transform:none} .rembtn .rt{display:none}
 }
 
 .detail{border-top:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:14px;background:var(--surface)}
@@ -442,12 +449,16 @@ function expand(d){
   return items;
 }
 /* Passcodes: read and edit (an "admin" passcode, if one was set in the Sheet, works the same as edit). Due to check and check intervals come with edit. */
-function setRole(r, canTick, lowTicket){
+/* caps: what the Sheet script said this passcode can do (canTick, lowTicket, readReminder); an older script says nothing. */
+function setRole(r, caps){
+  caps = caps || {}; var canTick = caps.canTick, lowTicket = caps.lowTicket;
   S.role = r || null; S.canWrite = r === "edit" || r === "admin"; S.isAdmin = S.canWrite; if (!S.isAdmin && S.status === "due") S.status = "all";
   /* Ticking off and removing reminders: the admin passcode (or edit, while the Sheet has no admin passcode). An older Sheet script does not say: then edit can. */
   S.canTick = canTick === undefined ? S.canWrite : !!canTick;
   /* The read-only passcode can mark a size Low (with about how much is left); the Sheet then adds a "Please check" reminder. */
   S.lowTicket = r === "read" && !!lowTicket;
+  /* ...and can add a reminder about one item, from the bell on its row in the list */
+  S.readRem = r === "read" && !!caps.readReminder;
 }
 function itemById(id){ for (var i = 0; i < S.items.length; i++) if (S.items[i].id === id) return S.items[i]; return null; }
 function applyPatch(p, ctx){
@@ -487,7 +498,7 @@ function saveCache(){
   if (DEMO) return;
   clearTimeout(cacheT);
   cacheT = setTimeout(function(){
-    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, lowTicket: S.lowTicket, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
+    try { localStorage.setItem(DKEY, JSON.stringify({role: S.role, canTick: S.canTick, lowTicket: S.lowTicket, readReminder: S.readRem, at: Date.now(), items: S.items, events: S.events, reminders: S.reminders, sizes: S.sizeRows}, function(k, v){ return k === "_hay" || k === "_g" ? undefined : v; })); } catch(e){}
   }, 500);
 }
 function readCache(){ try { var c = JSON.parse(localStorage.getItem(DKEY) || "null"); return c && c.items && c.items.length ? c : null; } catch(e){ return null; } }
@@ -501,7 +512,7 @@ function api(action, payload, ctx){
         .catch(function(e){ throw (e && e.error) ? e : {error: "network"}; });
   return call.then(function(d){
       if (!d || !d.ok) throw (d || {error: "network"});
-      setRole(d.role, d.canTick, d.lowTicket);
+      setRole(d.role, d);
       if (d.patch) applyPatch(d.patch, ctx);
       else {
         S.items = d.compact ? expand(d) : (d.items || []); S.events = d.events || []; if (d.reminders) S.reminders = d.reminders; S.lastLoad = Date.now();
@@ -660,10 +671,10 @@ function toggleStar(it, o){
   });
 }
 /* ---------- reminders: a shared checklist. Ticking one off shows at once and is saved in the background. ---------- */
-function addReminder(text){
+function addReminder(text, itemId){
   var r = {rid: "", text: text, at: stamp(), by: S.name, done: false, doneAt: "", doneBy: ""};
   S.reminders.push(r); render(); sync("Saving…");
-  return enqueue(function(){ return api("addReminder", {text: text}, {localRem: r}); }).catch(function(e){
+  return enqueue(function(){ return api("addReminder", itemId ? {text: text, itemId: itemId} : {text: text}, {localRem: r}); }).catch(function(e){
     S.reminders = S.reminders.filter(function(x){ return x !== r; }); sync("Not saved"); render(); toast("Not saved: " + problem(e), 9000);
   });
 }
@@ -796,9 +807,20 @@ function renameSize(it, g){
   });
 }
 function addItemReminder(it){
-  openSheet("Reminder about " + it.name, [{k: "text", label: "Reminder", req: true, wide: true}], {text: it.name + ": "}, function(v){
-    var t = String(v.text || "").trim(); if (!t) return; addReminder(t); toast("Added to Reminders");
+  var f = [{k: "text", label: "Reminder", req: true, wide: true}];
+  if (S.readRem) f.unshift({note: "It goes on the Reminders tab with your name, for someone with edit access to follow up."});
+  openSheet("Reminder about " + it.name, f, {text: it.name + ": "}, function(v){
+    var t = String(v.text || "").trim();
+    if (!t || t.replace(/[\s:]+$/, "") === it.name) return;   /* only the name: nothing written */
+    addReminder(t, it.id); toast("Added to Reminders");
   });
+}
+/* The bell on a list row (read-only passcode): a reminder about that item without opening it. Inline SVG, so no icon font. */
+var BELL = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+function bellFor(it){
+  var b = h("button", {class: "btn small rembtn", type: "button", title: "Add a reminder about " + it.name, "aria-label": "Add a reminder about " + it.name, onclick: function(){ addItemReminder(it); }});
+  b.innerHTML = BELL + '<span class="rt">Reminder</span>';
+  return b;
 }
 
 /* ---------- sign-in ---------- */
@@ -1181,12 +1203,13 @@ function renderItems(){
     if (folded) return;
     var s = statusOf(it), k = kindOf(it), p = bestOf(it), open = S.open === it.id, nOpt = (it.opts || []).length;
     var nm = h("span", {class: "name"}); nm.appendChild(chem(it.name));
-    wrap.appendChild(h("button", {class: "row", type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
+    var rowEl = (h("button", {class: "row" + (S.readRem ? " hasrem" : ""), type: "button", "aria-expanded": String(open), onclick: function(){ S.open = open ? null : it.id; render(); }},
       h("span", {class: "st" + (S.isAdmin && isDue(it) ? " isdue" : "")}, (function(){ var pf = pillFor(it, s); return h("span", {class: "pill " + pf.cls, text: pf.text}); })(),
         S.isAdmin && isDue(it) ? h("span", {class: "pill Due", title: flagged(it).length ? "Recheck asked by " + flagged(it).map(function(g){ return (g.stock.flagBy || "someone") + (g.label ? " (" + g.label + ")" : ""); }).join(", ") : "Due to check: report on it (Report stock, Low, Out, Ordered or No need)", text: "Due"}) : null),
       h("span", null, nm, it.aka ? h("span", {class: "aka", text: "  " + it.aka}) : null,
         h("div", {class: "meta"}, [it.loc, rowStock(it), it.lead ? "long lead time" : ""].filter(Boolean).join(" · "))),
       h("span", {class: "buy"}, p ? h("span", null, (p.vendor || "") + " ", h("span", {class: "mono", text: p.catalog || ""}), h("div", {class: "meta num", text: [pack(p), money(p.price), !p.pref && nOpt > 1 ? "1 of " + nOpt + " options" : ""].filter(Boolean).join(" · ")})) : h("span", {class: "meta", text: it.source || "no vendor recorded"}))));
+    wrap.appendChild(S.readRem ? h("div", {class: "rowwrap"}, rowEl, bellFor(it)) : rowEl);
     if (open) wrap.appendChild(detail(it));
   });
   var rv = reveal();
@@ -1321,7 +1344,7 @@ if (!/^https:\/\/script\.google\.com\//.test(API_URL) && !window.__TEST_API__){
     S.name = saved.name; S.pass = saved.pass;
     var kept = readCache();
     if (kept){
-      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept.canTick, kept.lowTicket); S.loaded = true;
+      S.items = kept.items; S.events = kept.events || []; S.reminders = kept.reminders || []; S.sizeRows = kept.sizes || []; indexSizes(); setRole(kept.role, kept); S.loaded = true;
       render(); sync("Saved copy; updating…"); load(true);
     } else { render(); load(); }
   }
