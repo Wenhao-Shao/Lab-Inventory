@@ -86,6 +86,7 @@ function onOpen() {
   if (typeof applyChanges1022 === 'function') menu.addItem('10. Group centrifuge tubes (22 Oct)', 'applyChanges1022');
   if (typeof applyChanges1028 === 'function') menu.addItem('11. Sizes for gloves, dropper bulb, PTFE filter paper (28 Oct)', 'applyChanges1028');
   if (typeof applyChanges1028b === 'function') menu.addItem('12. A size for every item (28 Oct)', 'applyChanges1028b');
+  if (typeof applyChanges1028c === 'function') menu.addItem('13. Reorganise sizes (28 Oct)', 'applyChanges1028c');
   menu.addToUi();
 }
 
@@ -276,6 +277,7 @@ function sizeReport_(ss, body, user, items, row, cur, ev, when, status, given, u
   // The item's own status: the worst of the sizes on show (a size is on show when a row of it is starred or it has no rows).
   var anyStar = opts.some(function (o) { return o.pref; }), shown = {};
   opts.forEach(function (o) { if (o.pref || !anyStar) shown[o.size || ''] = true; });
+  mine.forEach(function (r) { if (r.size === key ? (status === 'Low' || status === 'Out' || status === 'Ordered') : (r.status === 'Low' || r.status === 'Out' || r.status === 'Ordered')) shown[r.size] = true; });   // an open report never hides
   mine.forEach(function (r) { if (!opts.some(function (o) { return (o.size || '') === r.size; })) shown[r.size] = true; });
   var worst = '', parts = [];
   mine.forEach(function (r) {

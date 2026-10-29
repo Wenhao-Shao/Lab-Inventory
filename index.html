@@ -338,7 +338,7 @@ function groupsOf(it){
   var gs = keys.map(function(k){
     var g = map[k], st = g.rows.filter(function(o){ return o.pref; });
     g.stock = stockOf(it, k);
-    g.shown = !anyStar || !g.rows.length || st.length > 0;
+    g.shown = !anyStar || !g.rows.length || st.length > 0 || ["Low", "Out", "Ordered"].indexOf(stStatus(g.stock)) >= 0;   /* an open report never hides */
     g.label = k || String((st[0] || g.rows[0] || {}).grade || "").trim() || "Standard";
     return g;
   });
@@ -360,7 +360,7 @@ function bestIn(it, g){
 function statusLabel(s){ return s === "None" ? "No report" : s; }
 function hay(it){
   var p = [it.id, it.name, it.aka, it.cas, it.cat, it.loc, it.spec, it.source, it.notes, kindOf(it)];
-  (it.opts || []).forEach(function(o){ p.push(o.vendor, o.catalog, o.alt, o.grade); });
+  (it.opts || []).forEach(function(o){ p.push(o.vendor, o.catalog, o.alt, o.grade, o.size); });
   var s = p.filter(Boolean).join(" ").toLowerCase();
   return s + " " + s.replace(/[^a-z0-9 ]/g, "");
 }
@@ -827,7 +827,7 @@ function openSheet(title, fields, values, onSave, extra){
   s.textContent = ""; s.appendChild(form); s.hidden = false;
   var first = form.querySelector("input:not([readonly]),select,textarea"); if (first){ first.focus(); if (first.select && first.type === "number") first.select(); }
 }
-var UNITS = ["","L","mL","g","kg","box","bag","pack","pc","piece","roll","set","other"];
+var UNITS = ["","L","mL","g","kg","gal","lb","pack","pc","other"];   /* box, bag, roll, set and case are "pack"; piece is "pc" (28 Oct 2026) */
 function itemFields(adding, sizedItem){
   var cats = CAT_ORDER.slice(); S.items.forEach(function(it){ if (it.cat && cats.indexOf(it.cat) < 0) cats.push(it.cat); });
   var locs = []; S.items.forEach(function(it){ if (it.loc && locs.indexOf(it.loc) < 0) locs.push(it.loc); });
