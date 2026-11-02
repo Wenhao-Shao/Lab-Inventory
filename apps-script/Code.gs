@@ -80,10 +80,11 @@ function onOpen() {
     .addItem('Check status', 'status')
     .addSubMenu(SpreadsheetApp.getUi().createMenu('Notifications')
       .addItem('Set up Slack and email', 'setNotifications')
-      .addItem('Send a test', 'testNotifications')
-      .addItem('Due to check: count now', 'dueCheckNow')
-      .addItem('Due to check: daily alert on', 'dueAlertOn')
-      .addItem('Due to check: daily alert off', 'dueAlertOff'));
+      .addItem('Send a test (only you)', 'testNotifications')
+      .addItem('Reminder list: preview', 'digestPreview')
+      .addItem('Reminder list: send now', 'digestSendNow')
+      .addItem('Reminder list: schedule on', 'digestOn')
+      .addItem('Reminder list: schedule off', 'digestOff'));
   if (typeof loadMergedInventory === 'function') menu.addItem('3. Load merged inventory', 'loadMergedInventory');
   if (typeof applyFixes1007 === 'function') menu.addItem('4. Apply fixes (7 Oct)', 'applyFixes1007');
   if (typeof applyChanges1008 === 'function') menu.addItem('5. Apply changes (8 Oct)', 'applyChanges1008');
@@ -169,23 +170,27 @@ function status() {
 function alert_(msg) { try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); } }
 
 /* --------------------------------------------------------- notifications */
-// 29 Oct 2026. Sent from this script (it runs as the Sheet's owner), through a Slack app's bot token and Gmail:
-//   1. Each new reminder: a direct message from the app to each person in REMINDER_DM (testing phase: Yue only). With
-//      REMINDER_IN_CHANNEL "yes" it is also posted in SLACK_CHANNEL, @-mentioning NOTIFY_SLACK (off while testing).
-//   2. Once a day (trigger: Notifications > Due to check: daily alert on), if more than DUE_ALERT_OVER items are due to check,
-//      a post in SLACK_CHANNEL @-mentioning NOTIFY_SLACK and an email to NOTIFY_EMAIL. Sent again only after a week, or after
-//      the number has dropped to the limit or below and gone over again.
+// Sent from this script (it runs as the Sheet's owner), through a Slack app's bot token and Gmail. As set up on 1 Nov 2026:
+//   1. Each new reminder: a post in SLACK_CHANNEL (#ordering-receiving) @-mentioning NOTIFY_SLACK (Yue, Owen), when
+//      REMINDER_IN_CHANNEL is "yes"; and a direct message to anyone in REMINDER_DM (optional; the 29 Oct testing used it).
+//   2. The reminder list: every open reminder and everything on Due to check, however many (even none). Each morning between
+//      8 and 9 (trigger: Notifications > Reminder list: schedule on) the script checks the day: on DIGEST_SLACK_DAYS it is
+//      posted in SLACK_CHANNEL @-mentioning NOTIFY_SLACK; on DIGEST_EMAIL_DAYS it is emailed to NOTIFY_EMAIL. Both default
+//      to Monday and Thursday. (Until 1 Nov this was an alert sent only when more than 20 items were due to check.)
 // Script properties (set from Notifications > Set up Slack and email; never written in this file, which is public on GitHub):
 //   SLACK_BOT_TOKEN  the app's Bot User OAuth Token (xoxb-...; scopes chat:write and chat:write.public)
-//   SLACK_CHANNEL    channel ID for channel posts (#ordering-receiving)    REMINDER_DM  member IDs, e.g. "U01ABC, U02DEF"
-//   REMINDER_IN_CHANNEL  "yes" or "no" (default no)    NOTIFY_SLACK  member IDs to @-mention in the channel
-//   NOTIFY_EMAIL     email addresses, comma separated    DUE_ALERT_OVER  the limit (default 20)
+//   SLACK_CHANNEL    channel ID for channel posts    NOTIFY_SLACK  member IDs to @-mention there, e.g. "U01ABC, U02DEF"
+//   REMINDER_IN_CHANNEL  "yes" or "no"    REMINDER_DM  member IDs for a direct message about each new reminder (optional)
+//   NOTIFY_EMAIL     email addresses for the list    DIGEST_SLACK_DAYS / DIGEST_EMAIL_DAYS  e.g. "Mon, Thu"
 var PAGE_URL = 'https://wenhao-shao.github.io/Lab-Inventory/';
 var NOTIFY_ = [];
 function prop_(k) { return PropertiesService.getScriptProperties().getProperty(k) || ''; }
 function list_(v) { return String(v || '').split(/[\s,;]+/).filter(Boolean); }
 function mentions_() { return list_(prop_('NOTIFY_SLACK')).map(function (id) { return '<@' + id + '>'; }).join(' '); }
-function dueOver_() { var n = Number(prop_('DUE_ALERT_OVER')); return n > 0 ? Math.floor(n) : 20; }
+var DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+/** The days a setting names, as "mon", "thu", ...; "Mon, Thu" when it is not set. */
+function days_(key) { var v = prop_(key); return list_(v || 'Mon, Thu').map(function (d) { return d.slice(0, 3).toLowerCase(); }).filter(function (d) { return DAY_NAMES.indexOf(d) >= 0; }); }
+function dayList_(key) { return days_(key).map(function (d) { return d.charAt(0).toUpperCase() + d.slice(1); }).join(', ') || 'no day'; }
 /** Text from the page, made safe for Slack: no links, mentions or @channel can be slipped in. */
 function slackText_(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 /** Posts as the app to a channel ID, or to a member ID (a direct message from the app). Returns '' when Slack took it, else
@@ -240,44 +245,62 @@ function dueItems_(ss) {
 }
 function dueLine_(d) { return d.name + (d.nSizes > 1 ? ' (' + d.sizes.map(function (k) { return k || 'unnamed size'; }).join(', ') + ')' : ''); }
 
-/** Daily, from the trigger. Sends the Due to check alert when more than the limit are due (see the top of this section). */
-function dueAlert() {
-  var props = PropertiesService.getScriptProperties(), id = props.getProperty('SHEET_ID');
-  var ss = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-  return dueAlertFor_(ss, false);
+/* The reminder list (1 Nov 2026): open reminders and Due to check, sent on set days whatever the numbers. */
+function sheet_() { var id = prop_('SHEET_ID'); return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet(); }
+function digest_(ss) {
+  var open = reminders_(ss).filter(function (r) { return !r.done; }), due = dueItems_(ss);
+  return { day: Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'EEEE, MMM d'), open: open, due: due,
+           rems: open.map(function (r) { return r.text + ' (' + (r.by || 'someone') + ', ' + shortDay_(r.at) + ')'; }), dues: due.map(dueLine_) };
 }
-function dueAlertFor_(ss, force) {
-  var props = PropertiesService.getScriptProperties(), due = dueItems_(ss), n = due.length, over = dueOver_();
-  if (n <= over && !force) { props.deleteProperty('DUE_ALERT_SENT'); return { sent: false, n: n, why: n + ' due; the alert is for more than ' + over + '.' }; }
-  var last = Number(props.getProperty('DUE_ALERT_SENT')) || 0;
-  if (!force && last && Date.now() - last < 7 * 864e5)
-    return { sent: false, n: n, why: n + ' due; the alert was already sent on ' + Utilities.formatDate(new Date(last), ss.getSpreadsheetTimeZone(), 'MMM d') + ' and goes again a week after that.' };
-  var names = due.map(dueLine_), head = names.slice(0, 15), rest = names.length - head.length, who = mentions_();
-  var slackErr = slackPost_(prop_('SLACK_CHANNEL'), ':clipboard: *' + n + ' inventory items are due to check.*' + (who ? ' ' + who : '') +
-    ' When you have a moment, please open <' + PAGE_URL + '|the inventory>, choose *Due to check*, and report on each one; any report (a count, Low, Out, Ordered or No need) counts as its check.\n' +
-    slackText_(head.join(' · ')) + (rest > 0 ? ' · and ' + rest + ' more' : ''));
-  var to = list_(prop_('NOTIFY_EMAIL')), mailOk = false;
-  if (to.length) {
-    try {
-      MailApp.sendEmail({ to: to.join(','), subject: 'Lab inventory: ' + n + ' items are due to check',
-        body: 'Hello,\n\n' + n + ' items in the lab inventory are due to check: their routine check interval has passed, or someone asked for a recheck.\n\n' +
-          'When you have a moment, please open the inventory, choose "Due to check", and report on each one. Any report (a count, Low, Out, Ordered or No need) counts as its check.\n\n' +
-          PAGE_URL + '\n\nDue now:\n' + names.map(function (x) { return '  - ' + x; }).join('\n') +
-          '\n\nThis message is sent automatically by the lab inventory when more than ' + over + ' items are due to check.' });
-      mailOk = true;
-    } catch (e) { Logger.log('Email: ' + e); }
+function digestSlack_(d) {
+  var who = mentions_(), out = [':clipboard: *Inventory reminder list, ' + d.day + '*' + (who ? ' ' + who : '')];
+  if (!d.open.length && !d.due.length) { out.push('Nothing open: no reminders and nothing due to check.', '<' + PAGE_URL + '|Open the inventory>'); return out.join('\n'); }
+  out.push('*Open reminders (' + d.open.length + ')*' + (d.open.length ? '' : ': none'));
+  d.rems.slice(0, 20).forEach(function (x) { out.push('• ' + slackText_(x)); });
+  if (d.rems.length > 20) out.push('• and ' + (d.rems.length - 20) + ' more');
+  out.push('*Due to check (' + d.due.length + ')*' + (d.due.length ? '' : ': none'));
+  if (d.due.length) out.push(slackText_(d.dues.slice(0, 25).join(' · ')) + (d.dues.length > 25 ? ' · and ' + (d.dues.length - 25) + ' more' : ''));
+  out.push('<' + PAGE_URL + '|Open the inventory>' + (d.due.length ? '. For Due to check, report on each item (a count, Low, Out, Ordered or No need); any report counts as its check.' : ''));
+  return out.join('\n');
+}
+function digestEmail_(d) {
+  function block(title, xs) { return title + ' (' + xs.length + ')' + (xs.length ? ':\n' + xs.map(function (x) { return '  - ' + x; }).join('\n') : ': none'); }
+  var sd = dayList_('DIGEST_SLACK_DAYS'), ed = dayList_('DIGEST_EMAIL_DAYS');
+  return { subject: 'Lab inventory: ' + d.open.length + ' open reminder' + (d.open.length === 1 ? '' : 's') + ', ' + d.due.length + ' due to check (' + d.day + ')',
+    body: 'Hello,\n\nHere is the lab inventory reminder list for ' + d.day + '.\n\n' + block('Open reminders', d.rems) + '\n\n' + block('Due to check', d.dues) + '\n\n' +
+      (d.due.length ? 'For Due to check, open the inventory, choose "Due to check", and report on each item (a count, Low, Out, Ordered or No need). Any report counts as its check.\n' : '') +
+      PAGE_URL + '\n\nThis list is sent automatically by the lab inventory (email: ' + ed + '; Slack: ' + sd + ').' };
+}
+/** Sends the list to Slack and/or email now. { why: what happened }. */
+function sendDigest_(ss, toSlack, toEmail) {
+  var d = digest_(ss), parts = [];
+  if (toSlack) { var err = slackPost_(prop_('SLACK_CHANNEL'), digestSlack_(d)); parts.push('Slack: ' + (err ? 'not posted (' + err + ')' : 'posted')); }
+  if (toEmail) {
+    var to = list_(prop_('NOTIFY_EMAIL'));
+    if (!to.length) parts.push('Email: no address set');
+    else { try { var m = digestEmail_(d); MailApp.sendEmail({ to: to.join(','), subject: m.subject, body: m.body }); parts.push('Email: sent to ' + to.join(', ')); }
+           catch (e) { Logger.log('Email: ' + e); parts.push('Email: did not go through (' + e + ')'); } }
   }
-  var slackOk = !slackErr;
-  if (slackOk || mailOk) props.setProperty('DUE_ALERT_SENT', String(Date.now()));
-  return { sent: slackOk || mailOk, n: n, why: n + ' due. Slack: ' + (slackOk ? 'posted' : 'not posted (' + slackErr + ')') +
-    '. Email: ' + (mailOk ? 'sent to ' + to.join(', ') : to.length ? 'failed (see Executions)' : 'no address set') + '.' };
+  return { why: d.open.length + ' open reminders, ' + d.due.length + ' due to check. ' + parts.join('. ') + '.' };
 }
+/** Each morning, from the trigger: sends the list when today is one of the set days (once a day at most). */
+function dailyNotify() {
+  var ss = sheet_(), tz = ss.getSpreadsheetTimeZone(), now = new Date();
+  var today = Utilities.formatDate(now, tz, 'EEE').slice(0, 3).toLowerCase(), date = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+  var slack = days_('DIGEST_SLACK_DAYS').indexOf(today) >= 0, mail = days_('DIGEST_EMAIL_DAYS').indexOf(today) >= 0;
+  if (!slack && !mail) return 'Not a day for the list.';
+  if (prop_('DIGEST_SENT_ON') === date) return 'Already sent today.';
+  PropertiesService.getScriptProperties().setProperty('DIGEST_SENT_ON', date);
+  var r = sendDigest_(ss, slack, mail).why; Logger.log(r); return r;
+}
+function dueAlert() { return dailyNotify(); }   // the daily trigger of the first version (29 Oct) has this name
 
 function setNotifications() {
   var ui = SpreadsheetApp.getUi(), props = PropertiesService.getScriptProperties();
   function ask(title, text, key, check) {
     var cur = props.getProperty(key) || '';
-    var a = ui.prompt(title, text + '\n\nNow: ' + (key === 'SLACK_BOT_TOKEN' ? (cur ? 'set' : 'not set') : (cur || 'not set')) + '. Leave empty to keep it; type "none" to clear it.', ui.ButtonSet.OK_CANCEL);
+    var now = key === 'SLACK_BOT_TOKEN' ? (cur ? 'set' : 'not set') : cur || (/^DIGEST_/.test(key) ? 'Mon, Thu (the default)' : 'not set');
+    var a = ui.prompt(title, text + '\n\nNow: ' + now + '. Leave empty to keep it; type "none" to clear it.', ui.ButtonSet.OK_CANCEL);
     if (a.getSelectedButton() !== ui.Button.OK) return false;
     var v = a.getResponseText().trim();
     if (!v) return true;
@@ -286,52 +309,61 @@ function setNotifications() {
     props.setProperty(key, v); return true;
   }
   function ids(v) { return list_(v).every(function (x) { return /^[UW][A-Z0-9]{6,}$/.test(x); }); }
-  if (!ask('1/7 Slack bot token', 'The Bot User OAuth Token of the Slack app (it starts with xoxb-). Slack: your app, OAuth & Permissions.', 'SLACK_BOT_TOKEN',
+  function dayset(v) { return list_(v).every(function (x) { return DAY_NAMES.indexOf(x.slice(0, 3).toLowerCase()) >= 0; }); }
+  if (!ask('1/8 Slack bot token', 'The Bot User OAuth Token of the Slack app (it starts with xoxb-). Slack: your app, OAuth & Permissions.', 'SLACK_BOT_TOKEN',
       function (v) { return /^xoxb-[\w-]+$/.test(v); })) return;
-  if (!ask('2/7 Reminders: direct message to', 'Slack member IDs that get a direct message for each new reminder, separated by commas (a member ID starts with U; Slack: their profile, More, Copy member ID).', 'REMINDER_DM', ids)) return;
-  if (!ask('3/7 Reminders: also post in the channel?', 'yes or no. While testing, no.', 'REMINDER_IN_CHANNEL', function (v) { return /^(yes|no)$/i.test(v); })) return;
-  if (!ask('4/7 Channel', 'The channel ID for channel posts (#ordering-receiving). It starts with C; Slack: the channel name, About, at the bottom.', 'SLACK_CHANNEL',
+  if (!ask('2/8 Channel', 'The channel ID for channel posts (#ordering-receiving: C09NGL9EYUF). It starts with C; Slack: the channel name, About, at the bottom.', 'SLACK_CHANNEL',
       function (v) { return /^[CG][A-Z0-9]{6,}$/.test(v); })) return;
-  if (!ask('5/7 Who to @-mention in the channel', 'Slack member IDs, separated by commas: mentioned in the Due to check alert (and in channel reminder posts, if those are on).', 'NOTIFY_SLACK', ids)) return;
-  if (!ask('6/7 Who gets the Due to check email', 'Email addresses, separated by commas.', 'NOTIFY_EMAIL',
+  if (!ask('3/8 Who to @-mention in the channel', 'Slack member IDs, separated by commas (a member ID starts with U; Slack: their profile, More, Copy member ID). Mentioned in new-reminder posts and in the reminder list.', 'NOTIFY_SLACK', ids)) return;
+  if (!ask('4/8 New reminders: post in the channel?', 'yes or no.', 'REMINDER_IN_CHANNEL', function (v) { return /^(yes|no)$/i.test(v); })) return;
+  if (!ask('5/8 New reminders: also a direct message to', 'Slack member IDs, separated by commas, or "none" for no direct messages.', 'REMINDER_DM', ids)) return;
+  if (!ask('6/8 Who gets the reminder list by email', 'Email addresses, separated by commas.', 'NOTIFY_EMAIL',
       function (v) { return list_(v).every(function (x) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); }); })) return;
-  if (!ask('7/7 When to send the Due to check alert', 'Send it when MORE than this many items are due to check (default 20).', 'DUE_ALERT_OVER',
-      function (v) { return /^\d+$/.test(v) && Number(v) > 0; })) return;
-  props.deleteProperty('SLACK_WEBHOOK');   // the webhook of the first version is not used
-  ui.alert('Saved.\n\n' + notifyStatus_() + '\n\nNext: Notifications > Send a test.');
+  if (!ask('7/8 Days to post the list in Slack', 'Days, separated by commas, e.g. Mon, Thu (the default). Sent between 8 and 9 in the morning.', 'DIGEST_SLACK_DAYS', dayset)) return;
+  if (!ask('8/8 Days to email the list', 'Days, separated by commas, e.g. Mon, Thu (the default), or Mon for once a week.', 'DIGEST_EMAIL_DAYS', dayset)) return;
+  ['SLACK_WEBHOOK', 'DUE_ALERT_OVER', 'DUE_ALERT_SENT'].forEach(function (k) { props.deleteProperty(k); });   // settings of earlier versions
+  ui.alert('Saved.\n\n' + notifyStatus_() + '\n\nNext: Notifications > Reminder list: preview, then Reminder list: schedule on.');
 }
+function scheduleOn_() { return ScriptApp.getProjectTriggers().some(function (t) { return /^(dailyNotify|dueAlert)$/.test(t.getHandlerFunction()); }); }
 function notifyStatus_() {
-  var on = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'dueAlert'; });
   return 'Slack bot token: ' + (prop_('SLACK_BOT_TOKEN') ? 'set' : 'not set') +
-    '\nNew reminders: direct message to ' + (list_(prop_('REMINDER_DM')).join(', ') || 'nobody') + '; in the channel: ' + (/^y/i.test(prop_('REMINDER_IN_CHANNEL')) ? 'yes' : 'no') +
     '\nChannel: ' + (prop_('SLACK_CHANNEL') || 'not set') + '; @-mentions there: ' + (list_(prop_('NOTIFY_SLACK')).join(', ') || 'none') +
-    '\nDue to check email to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody') + '\nDue to check alert: more than ' + dueOver_() + ' items, daily check ' + (on ? 'on' : 'off');
+    '\nNew reminders: in the channel: ' + (/^y/i.test(prop_('REMINDER_IN_CHANNEL')) ? 'yes' : 'no') + '; direct message to: ' + (list_(prop_('REMINDER_DM')).join(', ') || 'nobody') +
+    '\nReminder list: Slack on ' + dayList_('DIGEST_SLACK_DAYS') + '; email on ' + dayList_('DIGEST_EMAIL_DAYS') + ' to ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody') +
+    '\nSchedule (8-9 am): ' + (scheduleOn_() ? 'on' : 'off');
 }
 /** A direct message to one member ID you give (your own, so nobody else is pinged), and an email to you. Nothing in the channel. */
 function testNotifications() {
   var ui = SpreadsheetApp.getUi(), me = Session.getEffectiveUser().getEmail();
   var a = ui.prompt('Send a test', 'The Slack member ID to send a test direct message to: yours, so nobody else is pinged (Slack: your profile, More, Copy member ID).', ui.ButtonSet.OK_CANCEL);
   if (a.getSelectedButton() !== ui.Button.OK) return;
-  var to = a.getResponseText().trim(), err = /^[UW][A-Z0-9]{6,}$/.test(to) ? slackPost_(to, ':white_check_mark: Test from the lab inventory. New reminders will come as direct messages like this one to: ' + (list_(prop_('REMINDER_DM')).join(', ') || 'nobody yet') + '.') : 'that is not a member ID';
+  var to = a.getResponseText().trim(), err = /^[UW][A-Z0-9]{6,}$/.test(to) ? slackPost_(to, ':white_check_mark: Test from the lab inventory: the Slack app can send messages.') : 'that is not a member ID';
   var mail = false;
-  try { MailApp.sendEmail(me, 'Lab inventory: test', 'This is how the Due to check email will arrive. It goes to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody yet') + '.'); mail = true; } catch (e) { Logger.log(e); }
+  try { MailApp.sendEmail(me, 'Lab inventory: test', 'The lab inventory can send email. The reminder list goes to: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody yet') + '.'); mail = true; } catch (e) { Logger.log(e); }
   ui.alert('Slack: ' + (err ? 'not sent (' + err + ')' : 'sent; look under Apps in Slack') + '\nEmail: ' + (mail ? 'sent to you (' + me + ')' : 'did not go through'));
 }
-function dueCheckNow() {
-  var ui = SpreadsheetApp.getUi(), ss = SpreadsheetApp.getActiveSpreadsheet(), due = dueItems_(ss), over = dueOver_();
-  var a = ui.alert('Due to check: ' + due.length, due.length + ' items are due to check now (the alert is for more than ' + over + ').\n\n' + due.slice(0, 25).map(dueLine_).join('\n') +
-    (due.length > 25 ? '\n... and ' + (due.length - 25) + ' more' : '') + '\n\nSend the alert now (Slack and email), whatever the number?', ui.ButtonSet.YES_NO);
+/** Shows the list as it would be sent now, and sends nothing. */
+function digestPreview() {
+  var d = digest_(SpreadsheetApp.getActiveSpreadsheet()), m = digestEmail_(d);
+  SpreadsheetApp.getUi().alert('Reminder list (preview; nothing sent)', 'EMAIL to ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody') + '\nSubject: ' + m.subject + '\n\n' + m.body.slice(0, 3000) +
+    '\n\n----------\nSLACK in ' + (prop_('SLACK_CHANNEL') || '(no channel)') + ' (<@U...> are the @-mentions)\n\n' + digestSlack_(d).slice(0, 1500), SpreadsheetApp.getUi().ButtonSet.OK);
+}
+function digestSendNow() {
+  var ui = SpreadsheetApp.getUi(), ss = SpreadsheetApp.getActiveSpreadsheet(), d = digest_(ss);
+  var a = ui.alert('Send the reminder list now?', d.open.length + ' open reminders, ' + d.due.length + ' due to check.\n\nSlack: ' + (prop_('SLACK_CHANNEL') || 'no channel') + ', mentioning ' +
+    (list_(prop_('NOTIFY_SLACK')).length || 'nobody') + '\nEmail: ' + (list_(prop_('NOTIFY_EMAIL')).join(', ') || 'nobody'), ui.ButtonSet.YES_NO);
   if (a !== ui.Button.YES) return;
-  ui.alert(dueAlertFor_(ss, true).why);
+  ui.alert(sendDigest_(ss, true, true).why);
 }
-function dueAlertOn() {
-  dueAlertOff(true);
-  ScriptApp.newTrigger('dueAlert').timeBased().everyDays(1).atHour(8).create();
-  SpreadsheetApp.getUi().alert('On. Every morning between 8 and 9 the inventory counts the items due to check, and sends the alert when there are more than ' + dueOver_() + '.');
+function digestOn() {
+  digestOff(true);
+  ScriptApp.newTrigger('dailyNotify').timeBased().everyDays(1).atHour(8).create();
+  SpreadsheetApp.getUi().alert('On. Between 8 and 9 each morning the inventory checks the day: the reminder list goes to Slack on ' + dayList_('DIGEST_SLACK_DAYS') +
+    ' and by email on ' + dayList_('DIGEST_EMAIL_DAYS') + '.');
 }
-function dueAlertOff(quiet) {
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'dueAlert') ScriptApp.deleteTrigger(t); });
-  if (quiet !== true) SpreadsheetApp.getUi().alert('Off. No daily Due to check alert.');
+function digestOff(quiet) {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (/^(dailyNotify|dueAlert)$/.test(t.getHandlerFunction())) ScriptApp.deleteTrigger(t); });
+  if (quiet !== true) SpreadsheetApp.getUi().alert('Off. The reminder list is not sent on a schedule. (New reminders are still posted as they come in.)');
 }
 
 /* --------------------------------------------------------------- web app */
